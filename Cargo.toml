@@ -28,6 +28,8 @@ esp-idf-svc = "0.51"
 anyhow = "1"
 smart-leds = "0.4.0"
 ws2812-esp32-rmt-driver = { version = "0.12.0", features = ["smart-leds-trait"] }
+embedded-svc = "0.28.1"
+heapless = "0.8.0"
 
 # --- Optional Embassy Integration ---
 # esp-idf-svc = { version = "0.51", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }

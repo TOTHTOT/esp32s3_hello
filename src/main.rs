@@ -2,10 +2,6 @@ mod board;
 
 use board::BspEsp32S3CoreBoard;
 use esp_idf_svc::hal::peripherals::Peripherals;
-use esp_idf_svc::{
-    eventloop::EspSystemEventLoop,
-    wifi::{AccessPointConfiguration, AuthMethod, ClientConfiguration},
-};
 use smart_leds::hsv::{hsv2rgb, Hsv};
 use smart_leds::SmartLedsWrite;
 use std::thread;
