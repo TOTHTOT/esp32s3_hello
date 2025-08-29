@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="RemoteTargetsManager">
+    <option name="projectDefaultTargetUuid" value="5a59675a-346d-48e2-84c4-af005555e0eb" />
+    <targets>
+      <target name="WSL - Ubuntu" type="wsl" uuid="5a59675a-346d-48e2-84c4-af005555e0eb">
+        <config>
+          <option name="distributionMsId" value="Ubuntu" />
+          <option name="projectRootOnTarget" value="{exitCode=0, timeout=false, cancelled=false, stdout=/tmp/tmp.RQkQM5WX7H&#13;&#10;, stderr=}/esp32_hello" />
+        </config>
+        <ContributedStateBase type="RsLanguageRuntime">
+          <config>
+            <option name="cargoPath" value="/root/.cargo/bin/cargo" />
+            <option name="cargoVersion" value="1.89.0 (c24e10642 2025-06-23)" />
+            <option name="rustcPath" value="/root/.cargo/bin/rustc" />
+            <option name="rustcVersion" value="1.89.0 (29483883e 2025-08-04)" />
+          </config>
+        </ContributedStateBase>
+      </target>
+    </targets>
+  </component>
+</project>
