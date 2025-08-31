@@ -24,7 +24,8 @@ experimental = ["esp-idf-svc/experimental"]
 
 [dependencies]
 log = "0.4"
-esp-idf-svc = "0.51"
+# 启用低功耗蓝牙(bt)需要"experimental", "alloc"特性
+esp-idf-svc = { version = "0.51.0", features = ["experimental", "alloc"] }
 anyhow = "1"
 smart-leds = "0.4.0"
 ws2812-esp32-rmt-driver = { version = "0.12.0", features = ["smart-leds-trait"] }

@@ -13,6 +13,9 @@ fn main() -> anyhow::Result<()> {
 
     let peripherals = Peripherals::take()?;
     let mut board = BspEsp32S3CoreBoard::new(peripherals)?;
+    if let Err(e) = board.wifi_connect("esp32_2.4G".to_string(), "12345678..".to_string()) {
+        log::warn!("Failed to connect to ESP32 server: {:?}", e);
+    }
     let mut hue: u8 = 0;
 
     loop {
@@ -24,7 +27,7 @@ fn main() -> anyhow::Result<()> {
         if let Err(e) = board.ws2812.write(pixels) {
             log::error!("Ws2812 write error:{e}");
         }
-        thread::sleep(Duration::from_millis(500));
+        thread::sleep(Duration::from_millis(50));
         hue = hue.wrapping_add(10);
     }
 }
