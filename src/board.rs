@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use embedded_svc::wifi::Configuration;
+use embedded_svc::{http::Method, io::Write, wifi};
 use esp32_nimble::{
     uuid128, BLEAdvertisedDevice, BLEAdvertisementData, BLEDevice, BLEScan, NimbleProperties,
 };
@@ -7,14 +7,15 @@ use esp_idf_svc::hal::prelude::Peripherals;
 use esp_idf_svc::hal::task::block_on;
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
-    nvs::EspNvsPartition,
-    wifi::{AuthMethod, ClientConfiguration, EspWifi},
+    http,
+    http::server::EspHttpServer,
+    nvs::{EspNvsPartition, NvsDefault},
+    wifi::{AuthMethod, EspWifi},
 };
 use std::thread;
 use std::time::Duration;
 use ws2812_esp32_rmt_driver::lib_smart_leds::Ws2812Esp32Rmt;
 
-use esp_idf_svc::nvs::NvsDefault;
 // 默认连接的wifi
 const WIFI_SSID: &str = "esp32_2.4G";
 const WIFI_PASSWD: &str = "12345678..";
@@ -32,8 +33,9 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         let nvs = EspNvsPartition::<NvsDefault>::take()?;
 
         let wifi = EspWifi::new(peripherals.modem, sysloop, Some(nvs.clone()))?;
-        Self::ble_scan(10000)?;
+        // Self::ble_scan(10000)?;
         Self::ble_server_start()?;
+        Self::test_http_server()?;
         log::info!("start init ws2812");
         let ws2812 = Ws2812Esp32Rmt::new(peripherals.rmt.channel0, peripherals.pins.gpio48)
             .map_err(|e| anyhow!("Ws2812Esp32Rmt error: {:?}", e))?;
@@ -65,7 +67,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         self.wifi_password = wifi_passwd;
         self.wifi_ssid = wifi_ssid;
         self.wifi
-            .set_configuration(&Configuration::Client(ClientConfiguration {
+            .set_configuration(&wifi::Configuration::Client(wifi::ClientConfiguration {
                 ssid,
                 password,
                 auth_method: AuthMethod::WPA2Personal,
@@ -184,6 +186,63 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         });
         Ok(())
     }
+
+    // 开启http服务
+    fn test_http_server() -> Result<()> {
+        thread::spawn(move || -> Result<()> {
+            log::info!("http server running");
+            let mut http_server = EspHttpServer::new(&http::server::Configuration::default())?;
+            Self::http_server_add_page(&mut http_server, "/", Self::index_html())?;
+            Self::http_server_add_page(&mut http_server, "/temp", Self::temperature(true))?;
+            loop {
+                thread::sleep(Duration::from_secs(1));
+            }
+        });
+        Ok(())
+    }
+
+    // 添加一个页面
+    fn http_server_add_page(server: &mut EspHttpServer, url: &str, html: String) -> Result<()> {
+        server.fn_handler(url, Method::Get, move |request| {
+            let mut response = match request.into_ok_response() {
+                Ok(response) => response,
+                Err(err) => {
+                    log::warn!("Failed to read response: {:?}", err);
+                    return Err(());
+                }
+            };
+            response.write_all(html.as_bytes()).unwrap();
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    fn templated(content: impl AsRef<str>) -> String {
+        format!(
+            r#"
+    <!DOCTYPE html>
+    <html>
+        <head>
+            <meta charset="utf-8">
+            <title>esp-rs web server</title>
+        </head>
+        <body>
+            {}
+        </body>
+    </html>
+    "#,
+            content.as_ref()
+        )
+    }
+
+    fn index_html() -> String {
+        Self::templated("Hello from ESP32-S3!")
+    }
+
+    fn temperature(val: bool) -> String {
+        Self::templated(format!("high: {}", val))
+    }
+
     pub fn wifi_ssid(&self) -> &str {
         &self.wifi_ssid
     }
