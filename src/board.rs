@@ -7,11 +7,12 @@ use esp_idf_svc::hal::prelude::Peripherals;
 use esp_idf_svc::hal::task::block_on;
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
-    http,
+    hal::temp_sensor::{TempSensorConfig, TempSensorDriver},
     http::server::EspHttpServer,
     nvs::{EspNvsPartition, NvsDefault},
     wifi::{AuthMethod, EspWifi},
 };
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use ws2812_esp32_rmt_driver::lib_smart_leds::Ws2812Esp32Rmt;
@@ -22,6 +23,8 @@ const WIFI_PASSWD: &str = "12345678..";
 pub struct BspEsp32S3CoreBoard<'d> {
     pub ws2812: Ws2812Esp32Rmt<'d>,
     pub wifi: EspWifi<'d>,
+    pub current_mcu_temperature: Arc<Mutex<f32>>,
+    mcu_temperature: TempSensorDriver<'d>,
     wifi_ssid: String,
     wifi_password: String,
 }
@@ -34,14 +37,19 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
 
         let wifi = EspWifi::new(peripherals.modem, sysloop, Some(nvs.clone()))?;
         // Self::ble_scan(10000)?;
-        Self::ble_server_start()?;
         Self::test_http_server()?;
         log::info!("start init ws2812");
         let ws2812 = Ws2812Esp32Rmt::new(peripherals.rmt.channel0, peripherals.pins.gpio48)
             .map_err(|e| anyhow!("Ws2812Esp32Rmt error: {:?}", e))?;
+
+        let mut temp_sensor =
+            TempSensorDriver::new(&TempSensorConfig::default(), peripherals.temp_sensor)?;
+        temp_sensor.enable()?;
         Ok(Self {
             ws2812,
             wifi,
+            current_mcu_temperature: Arc::new(Mutex::new(0.0)),
+            mcu_temperature: temp_sensor,
             wifi_ssid: WIFI_SSID.to_string(),
             wifi_password: WIFI_PASSWD.to_string(),
         })
@@ -102,7 +110,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         Ok(devices)
     }
 
-    fn ble_server_start() -> Result<(), anyhow::Error> {
+    pub fn ble_server_start(&mut self) -> Result<(), anyhow::Error> {
         let ble = BLEDevice::take();
         let ble_advertising = ble.get_advertising();
         let server = ble.get_server();
@@ -171,14 +179,17 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
 
         // 开启连接日志显示
         server.ble_gatts_show_local();
-        thread::spawn(move || {
+        let mytemp = Arc::clone(&self.current_mcu_temperature);
+        thread::spawn(move || -> Result<()> {
             let mut counter = 0;
+            let mut temp = 0.0;
+            if let Ok(tt) = mytemp.lock() {
+                temp = *tt;
+            }
             loop {
-                let notify_data = String::from(format!("Server run counter: {}", counter));
-                log::info!("notify_data: {}", notify_data);
                 notifying_characteristic
                     .lock()
-                    .set_value(format!("Counter: {counter}").as_bytes())
+                    .set_value(format!("running:{counter},temp:{temp}",).as_bytes())
                     .notify();
                 counter += 1;
                 thread::sleep(Duration::from_millis(1000));
@@ -191,7 +202,8 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
     fn test_http_server() -> Result<()> {
         thread::spawn(move || -> Result<()> {
             log::info!("http server running");
-            let mut http_server = EspHttpServer::new(&http::server::Configuration::default())?;
+            let mut http_server =
+                EspHttpServer::new(&esp_idf_svc::http::server::Configuration::default())?;
             Self::http_server_add_page(&mut http_server, "/", Self::index_html())?;
             Self::http_server_add_page(&mut http_server, "/temp", Self::temperature(true))?;
             loop {
@@ -249,5 +261,15 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
 
     pub fn wifi_password(&self) -> &str {
         &self.wifi_password
+    }
+
+    pub fn get_mcu_temperature(&mut self) -> Result<f32> {
+        let temp = self.mcu_temperature.get_celsius()?;
+        let mytemp = Arc::clone(&self.current_mcu_temperature);
+        if let Ok(mut tt) = mytemp.lock() {
+            *tt = temp;
+            log::info!("set current_mcu_temperature: {:?}", *tt);
+        }
+        Ok(temp)
     }
 }
