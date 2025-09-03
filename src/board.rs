@@ -3,18 +3,22 @@ use embedded_svc::{http::Method, io::Write, wifi};
 use esp32_nimble::{
     uuid128, BLEAdvertisedDevice, BLEAdvertisementData, BLEDevice, BLEScan, NimbleProperties,
 };
-use esp_idf_svc::hal::prelude::Peripherals;
-use esp_idf_svc::hal::task::block_on;
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
-    hal::temp_sensor::{TempSensorConfig, TempSensorDriver},
+    hal::{
+        prelude::Peripherals,
+        task::block_on,
+        temp_sensor::{TempSensorConfig, TempSensorDriver},
+    },
     http::server::EspHttpServer,
     nvs::{EspNvsPartition, NvsDefault},
     wifi::{AuthMethod, EspWifi},
 };
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    thread,
+    time::Duration,
+};
 use ws2812_esp32_rmt_driver::lib_smart_leds::Ws2812Esp32Rmt;
 
 // 默认连接的wifi
@@ -183,13 +187,15 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         thread::spawn(move || -> Result<()> {
             let mut counter = 0;
             let mut temp = 0.0;
-            if let Ok(tt) = mytemp.lock() {
-                temp = *tt;
-            }
             loop {
+                if let Ok(tt) = mytemp.lock() {
+                    temp = *tt;
+                }
+                let notify_str = String::from(format!("running:{counter},temp:{temp}",));
+                log::info!("{notify_str}");
                 notifying_characteristic
                     .lock()
-                    .set_value(format!("running:{counter},temp:{temp}",).as_bytes())
+                    .set_value(notify_str.as_bytes())
                     .notify();
                 counter += 1;
                 thread::sleep(Duration::from_millis(1000));
@@ -268,7 +274,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         let mytemp = Arc::clone(&self.current_mcu_temperature);
         if let Ok(mut tt) = mytemp.lock() {
             *tt = temp;
-            log::info!("set current_mcu_temperature: {:?}", *tt);
+            // log::info!("set current_mcu_temperature: {:?}", *tt);
         }
         Ok(temp)
     }
