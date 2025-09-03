@@ -13,8 +13,7 @@ fn main() -> anyhow::Result<()> {
 
     let peripherals = Peripherals::take()?;
     let mut board = BspEsp32S3CoreBoard::new(peripherals)?;
-    board.wifi_connect("esp32_2.4G".to_string(), "12345678..".to_string())?;
-    board.ble_server_start()?;
+    board.wifi_connect("RAYNEN".to_string(), "RN603933".to_string())?;
     // 有需要的话可以在线程结束后回收
     let _ble_server_handle = board.ble_server_start()?;
     let _http_server_handle = board.test_http_server()?;
