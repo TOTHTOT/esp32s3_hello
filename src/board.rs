@@ -14,6 +14,7 @@ use esp_idf_svc::{
     nvs::{EspNvsPartition, NvsDefault},
     wifi::{AuthMethod, EspWifi},
 };
+use std::thread::JoinHandle;
 use std::{
     sync::{Arc, Mutex},
     thread,
@@ -41,7 +42,6 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
 
         let wifi = EspWifi::new(peripherals.modem, sysloop, Some(nvs.clone()))?;
         // Self::ble_scan(10000)?;
-        Self::test_http_server()?;
         log::info!("start init ws2812");
         let ws2812 = Ws2812Esp32Rmt::new(peripherals.rmt.channel0, peripherals.pins.gpio48)
             .map_err(|e| anyhow!("Ws2812Esp32Rmt error: {:?}", e))?;
@@ -114,7 +114,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         Ok(devices)
     }
 
-    pub fn ble_server_start(&mut self) -> Result<(), anyhow::Error> {
+    pub fn ble_server_start(&mut self) -> Result<JoinHandle<Result<()>>, anyhow::Error> {
         let ble = BLEDevice::take();
         let ble_advertising = ble.get_advertising();
         let server = ble.get_server();
@@ -184,7 +184,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         // 开启连接日志显示
         server.ble_gatts_show_local();
         let mytemp = Arc::clone(&self.current_mcu_temperature);
-        thread::spawn(move || -> Result<()> {
+        let handle = thread::spawn(move || -> Result<()> {
             let mut counter = 0;
             let mut temp = 0.0;
             loop {
@@ -201,12 +201,12 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
                 thread::sleep(Duration::from_millis(1000));
             }
         });
-        Ok(())
+        Ok(handle)
     }
 
     // 开启http服务
-    fn test_http_server() -> Result<()> {
-        thread::spawn(move || -> Result<()> {
+    pub fn test_http_server(&self) -> Result<JoinHandle<Result<()>>, anyhow::Error> {
+        let handle = thread::spawn(move || -> Result<()> {
             log::info!("http server running");
             let mut http_server =
                 EspHttpServer::new(&esp_idf_svc::http::server::Configuration::default())?;
@@ -216,7 +216,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
                 thread::sleep(Duration::from_secs(1));
             }
         });
-        Ok(())
+        Ok(handle)
     }
 
     // 添加一个页面

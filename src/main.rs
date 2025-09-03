@@ -15,6 +15,10 @@ fn main() -> anyhow::Result<()> {
     let mut board = BspEsp32S3CoreBoard::new(peripherals)?;
     board.wifi_connect("esp32_2.4G".to_string(), "12345678..".to_string())?;
     board.ble_server_start()?;
+    // 有需要的话可以在线程结束后回收
+    let _ble_server_handle = board.ble_server_start()?;
+    let _http_server_handle = board.test_http_server()?;
+
     let mut hue: u8 = 0;
 
     loop {
