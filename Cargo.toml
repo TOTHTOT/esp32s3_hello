@@ -52,6 +52,5 @@ esp32-nimble = "0.11.1"
 [build-dependencies]
 embuild = "0.33"
 
-[package.metadata.espflash]
+[package.metadata.esp-idf]
 partition_table = "partitions.csv"
-flash_size = "16MB"
