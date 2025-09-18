@@ -6,18 +6,12 @@ use std::{
     ffi::CString,
     fs::{File, OpenOptions},
     io::{Read as StdRead, Write as StdWrite},
-    ptr,
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
     time::Duration,
 };
-
 // Embedded SVC traits
-use embedded_svc::{
-    http::Method,
-    io::{Read as EspRead, Write as EspWrite},
-    wifi,
-};
+use embedded_svc::{http::Method, io::Write as EspWrite, wifi};
 
 // NimBLE (蓝牙)
 use esp32_nimble::{
@@ -34,12 +28,10 @@ use esp_idf_svc::{
     },
     http::server::EspHttpServer,
     nvs::{EspNvsPartition, NvsDefault},
-    partition::{EspPartition, EspWlPartition},
     sys,
     wifi::{AuthMethod, EspWifi},
 };
 
-// ESP-IDF sys 原始 API (只挑必要的)
 use esp_idf_svc::sys::{
     esp, esp_vfs_fat_mount_config_t, esp_vfs_fat_spiflash_mount, nvs_flash_erase, nvs_flash_init,
     wl_handle_t, ESP_ERR_NVS_NEW_VERSION_FOUND, ESP_ERR_NVS_NO_FREE_PAGES,
@@ -76,11 +68,9 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         let mut temp_sensor =
             TempSensorDriver::new(&TempSensorConfig::default(), peripherals.temp_sensor)?;
         temp_sensor.enable()?;
-        if let fs_init = BspEsp32S3CoreBoard::init_fs() {
-            Ok(_) => true,
-            Err(e) => {
-
-            }
+        let mut fs_init = false;
+        if let Ok(_) = BspEsp32S3CoreBoard::init_fs() {
+            fs_init = true;
         }
         Ok(Self {
             ws2812,
@@ -89,7 +79,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             mcu_temperature: temp_sensor,
             wifi_ssid: WIFI_SSID.to_string(),
             wifi_password: WIFI_PASSWD.to_string(),
-            fs_init:false,
+            fs_init,
         })
     }
 
@@ -103,15 +93,11 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
                 nvs_flash_erase();
                 nvs_flash_init();
             } else {
-                esp!(ret).unwrap();
+                esp!(ret)?;
             }
         }
 
-        // 挂载 FAT 到 /fat（分区 label 必须与 partitions.csv 中一致，这里是 "storage"）
-        let mount_point = CString::new("/fat").unwrap();
-        let partition_label = CString::new("storage").unwrap();
-
-        // 配置结构体
+        // 启用磨损均衡功能
         let mut wl_handle = 0;
         let mount_config = esp_vfs_fat_mount_config_t {
             max_files: 5,
@@ -122,10 +108,14 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             use_one_fat: false,
         };
 
+        // 挂载 FAT 到 /fat（分区 label 必须与 partitions.csv 中一致.
+        let mount_point = String::from("/fat");
+        let partition_label = String::from("storage");
         let res = unsafe {
+            // 和c交互只能使用CString.
             esp_vfs_fat_spiflash_mount(
-                mount_point.as_ptr(),
-                partition_label.as_ptr(),
+                CString::new(mount_point).unwrap().as_ptr(),
+                CString::new(partition_label).unwrap().as_ptr(),
                 &mount_config,
                 &mut wl_handle as *mut wl_handle_t,
             )
@@ -136,8 +126,12 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             return Err(anyhow!(res));
         }
         log::info!("FAT mounted at /fat");
+        BspEsp32S3CoreBoard::test_fs_rw()?;
+        Ok(())
+    }
 
-        // 使用 std::fs 直接操作（VFS 已注册）
+    /// `test_fs_rw` 测试文件系统读写
+    fn test_fs_rw() -> Result<()> {
         let path = "/fat/hello.txt";
         {
             let mut f = OpenOptions::new()
@@ -145,18 +139,15 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
                 .write(true)
                 .open(path)
                 .expect("create file failed");
-            f.write_all(b"hello from rust on esp32!\n")
-                .expect("write failed");
+            f.write_all(b"hello from rust on esp32!\n")?;
         }
-        {
-            let mut s = String::new();
-            let mut f = File::open(path).expect("open failed");
-            f.read_to_string(&mut s).expect("read failed");
-            log::info!("file content: {}", s);
-        }
-
+        let mut s = String::new();
+        let mut f = File::open(path)?;
+        f.read_to_string(&mut s)?;
+        log::info!("file content: {}", s);
         Ok(())
     }
+
     /// 连接wifi 传入 wifi 名称和密码
     pub fn wifi_connect(
         &mut self,
@@ -317,7 +308,6 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         });
         Ok(handle)
     }
-
     // 添加一个页面
     fn http_server_add_page(server: &mut EspHttpServer, url: &str, html: String) -> Result<()> {
         server.fn_handler(url, Method::Get, move |request| {
