@@ -92,6 +92,20 @@
 
 - 参考[使用WSL2+Rust+RustRover+esp-rs进行ESP32嵌入式开发 :: 世界观察日志](https://wol.moe/%E4%BD%BF%E7%94%A8wsl2-rust-rustrover-esp-rs%E8%BF%9B%E8%A1%8Cesp32%E5%B5%8C%E5%85%A5%E5%BC%8F%E5%BC%80%E5%8F%91/)部署到RustRover编译.
 
+- idf配置, 手动配置`sdkconfig.defaults`再复制到项目, 比较麻烦
+  - 拉取仓库
+    ```shell
+    git clone --recursive https://github.com/espressif/esp-idf.git # 递归拉取仓库
+    git config --global core.autocrlf input # 设置拉取的格式换行符
+    # 如果不行就手动替换换行符
+    find . -name "*.sh" -exec dos2unix {} \;
+    find . -name "*.py" -exec dos2unix {} \;
+    
+    ./install.sh
+    source export.sh 
+    # 之后就可以在项目根目录配置idf了.
+   ```
+
 ## 新建工程
 
 - 创建流程, 不能选错芯片`cargo generate esp-rs/esp-idf-template cargo`和这个类似.

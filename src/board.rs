@@ -1,8 +1,30 @@
+// 错误处理
 use anyhow::{anyhow, Result};
-use embedded_svc::{http::Method, io::Write, wifi};
+
+// 标准库
+use std::{
+    ffi::CString,
+    fs::{File, OpenOptions},
+    io::{Read as StdRead, Write as StdWrite},
+    ptr,
+    sync::{Arc, Mutex},
+    thread::{self, JoinHandle},
+    time::Duration,
+};
+
+// Embedded SVC traits
+use embedded_svc::{
+    http::Method,
+    io::{Read as EspRead, Write as EspWrite},
+    wifi,
+};
+
+// NimBLE (蓝牙)
 use esp32_nimble::{
     uuid128, BLEAdvertisedDevice, BLEAdvertisementData, BLEDevice, BLEScan, NimbleProperties,
 };
+
+// ESP-IDF 服务封装
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::{
@@ -12,14 +34,18 @@ use esp_idf_svc::{
     },
     http::server::EspHttpServer,
     nvs::{EspNvsPartition, NvsDefault},
+    partition::{EspPartition, EspWlPartition},
+    sys,
     wifi::{AuthMethod, EspWifi},
 };
-use std::thread::JoinHandle;
-use std::{
-    sync::{Arc, Mutex},
-    thread,
-    time::Duration,
+
+// ESP-IDF sys 原始 API (只挑必要的)
+use esp_idf_svc::sys::{
+    esp, esp_vfs_fat_mount_config_t, esp_vfs_fat_spiflash_mount, nvs_flash_erase, nvs_flash_init,
+    wl_handle_t, ESP_ERR_NVS_NEW_VERSION_FOUND, ESP_ERR_NVS_NO_FREE_PAGES,
 };
+
+// WS2812 LED 驱动
 use ws2812_esp32_rmt_driver::lib_smart_leds::Ws2812Esp32Rmt;
 
 // 默认连接的wifi
@@ -29,6 +55,7 @@ pub struct BspEsp32S3CoreBoard<'d> {
     pub ws2812: Ws2812Esp32Rmt<'d>,
     pub wifi: EspWifi<'d>,
     pub current_mcu_temperature: Arc<Mutex<f32>>,
+    fs_init: bool, // 标记文件系统是否初始化成功
     mcu_temperature: TempSensorDriver<'d>,
     wifi_ssid: String,
     wifi_password: String,
@@ -49,6 +76,12 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         let mut temp_sensor =
             TempSensorDriver::new(&TempSensorConfig::default(), peripherals.temp_sensor)?;
         temp_sensor.enable()?;
+        if let fs_init = BspEsp32S3CoreBoard::init_fs() {
+            Ok(_) => true,
+            Err(e) => {
+
+            }
+        }
         Ok(Self {
             ws2812,
             wifi,
@@ -56,7 +89,73 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             mcu_temperature: temp_sensor,
             wifi_ssid: WIFI_SSID.to_string(),
             wifi_password: WIFI_PASSWD.to_string(),
+            fs_init:false,
         })
+    }
+
+    fn init_fs() -> Result<()> {
+        log::info!("init_fs");
+        unsafe {
+            let ret = nvs_flash_init();
+            if ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND {
+                log::info!("fat partition need init");
+                // 如果 nvs 需要擦除
+                nvs_flash_erase();
+                nvs_flash_init();
+            } else {
+                esp!(ret).unwrap();
+            }
+        }
+
+        // 挂载 FAT 到 /fat（分区 label 必须与 partitions.csv 中一致，这里是 "storage"）
+        let mount_point = CString::new("/fat").unwrap();
+        let partition_label = CString::new("storage").unwrap();
+
+        // 配置结构体
+        let mut wl_handle = 0;
+        let mount_config = esp_vfs_fat_mount_config_t {
+            max_files: 5,
+            format_if_mount_failed: true,
+            allocation_unit_size: 4096,
+
+            disk_status_check_enable: false,
+            use_one_fat: false,
+        };
+
+        let res = unsafe {
+            esp_vfs_fat_spiflash_mount(
+                mount_point.as_ptr(),
+                partition_label.as_ptr(),
+                &mount_config,
+                &mut wl_handle as *mut wl_handle_t,
+            )
+        };
+
+        if res != sys::ESP_OK {
+            log::error!("esp_vfs_fat_spiflash_mount failed: {}", res);
+            return Err(anyhow!(res));
+        }
+        log::info!("FAT mounted at /fat");
+
+        // 使用 std::fs 直接操作（VFS 已注册）
+        let path = "/fat/hello.txt";
+        {
+            let mut f = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .open(path)
+                .expect("create file failed");
+            f.write_all(b"hello from rust on esp32!\n")
+                .expect("write failed");
+        }
+        {
+            let mut s = String::new();
+            let mut f = File::open(path).expect("open failed");
+            f.read_to_string(&mut s).expect("read failed");
+            log::info!("file content: {}", s);
+        }
+
+        Ok(())
     }
     /// 连接wifi 传入 wifi 名称和密码
     pub fn wifi_connect(
@@ -192,7 +291,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
                     temp = *tt;
                 }
                 let notify_str = String::from(format!("running:{counter},temp:{temp}",));
-                log::info!("{notify_str}");
+                // log::info!("{notify_str}");
                 notifying_characteristic
                     .lock()
                     .set_value(notify_str.as_bytes())
@@ -277,5 +376,13 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             // log::info!("set current_mcu_temperature: {:?}", *tt);
         }
         Ok(temp)
+    }
+
+    pub fn get_fs_init(&self) -> bool {
+        self.fs_init
+    }
+
+    pub fn set_fs_init(&mut self, fs_init: bool) {
+        self.fs_init = fs_init;
     }
 }
