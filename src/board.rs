@@ -19,6 +19,10 @@ use esp32_nimble::{
 };
 
 // ESP-IDF 服务封装
+use esp_idf_svc::sys::{
+    esp, esp_vfs_fat_mount_config_t, esp_vfs_fat_spiflash_mount, nvs_flash_erase, nvs_flash_init,
+    wl_handle_t, ESP_ERR_NVS_NEW_VERSION_FOUND, ESP_ERR_NVS_NO_FREE_PAGES,
+};
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::{
@@ -32,25 +36,26 @@ use esp_idf_svc::{
     wifi::{AuthMethod, EspWifi},
 };
 
-use esp_idf_svc::sys::{
-    esp, esp_vfs_fat_mount_config_t, esp_vfs_fat_spiflash_mount, nvs_flash_erase, nvs_flash_init,
-    wl_handle_t, ESP_ERR_NVS_NEW_VERSION_FOUND, ESP_ERR_NVS_NO_FREE_PAGES,
-};
-
 // WS2812 LED 驱动
 use ws2812_esp32_rmt_driver::lib_smart_leds::Ws2812Esp32Rmt;
 
 // 默认连接的wifi
 const WIFI_SSID: &str = "esp32_2.4G";
 const WIFI_PASSWD: &str = "12345678..";
+
 pub struct BspEsp32S3CoreBoard<'d> {
     pub ws2812: Ws2812Esp32Rmt<'d>,
     pub wifi: EspWifi<'d>,
-    pub current_mcu_temperature: Arc<Mutex<f32>>,
-    fs_init: bool, // 标记文件系统是否初始化成功
     mcu_temperature: TempSensorDriver<'d>,
+    fs_init: bool, // 标记文件系统是否初始化成功
     wifi_ssid: String,
     wifi_password: String,
+}
+
+#[derive(Default, Debug)]
+pub struct BoardEsp32State {
+    pub exit: bool,
+    pub current_mcu_temperature: f32,
 }
 
 #[allow(dead_code)]
@@ -75,7 +80,6 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         Ok(Self {
             ws2812,
             wifi,
-            current_mcu_temperature: Arc::new(Mutex::new(0.0)),
             mcu_temperature: temp_sensor,
             wifi_ssid: WIFI_SSID.to_string(),
             wifi_password: WIFI_PASSWD.to_string(),
@@ -114,8 +118,8 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         let res = unsafe {
             // 和c交互只能使用CString.
             esp_vfs_fat_spiflash_mount(
-                CString::new(mount_point).unwrap().as_ptr(),
-                CString::new(partition_label).unwrap().as_ptr(),
+                CString::new(mount_point)?.as_ptr(),
+                CString::new(partition_label)?.as_ptr(),
                 &mount_config,
                 &mut wl_handle as *mut wl_handle_t,
             )
@@ -204,7 +208,9 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         Ok(devices)
     }
 
-    pub fn ble_server_start(&mut self) -> Result<JoinHandle<Result<()>>, anyhow::Error> {
+    pub fn ble_server_start(
+        board: Arc<Mutex<BoardEsp32State>>,
+    ) -> Result<JoinHandle<Result<()>>, anyhow::Error> {
         let ble = BLEDevice::take();
         let ble_advertising = ble.get_advertising();
         let server = ble.get_server();
@@ -273,13 +279,16 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
 
         // 开启连接日志显示
         server.ble_gatts_show_local();
-        let mytemp = Arc::clone(&self.current_mcu_temperature);
+
         let handle = thread::spawn(move || -> Result<()> {
             let mut counter = 0;
-            let mut temp = 0.0;
             loop {
-                if let Ok(tt) = mytemp.lock() {
-                    temp = *tt;
+                thread::sleep(Duration::from_millis(1000));
+                let board_state = board.lock().expect("Failed to lock board mutex");
+                let temp = board_state.current_mcu_temperature;
+                if board_state.exit == true {
+                    log::info!("ble server stopped");
+                    break Ok(());
                 }
                 let notify_str = String::from(format!("running:{counter},temp:{temp}",));
                 // log::info!("{notify_str}");
@@ -288,22 +297,35 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
                     .set_value(notify_str.as_bytes())
                     .notify();
                 counter += 1;
-                thread::sleep(Duration::from_millis(1000));
             }
         });
         Ok(handle)
     }
 
     // 开启http服务
-    pub fn test_http_server(&self) -> Result<JoinHandle<Result<()>>, anyhow::Error> {
+    pub fn test_http_server(
+        board: Arc<Mutex<BoardEsp32State>>,
+    ) -> Result<JoinHandle<Result<()>>, anyhow::Error> {
         let handle = thread::spawn(move || -> Result<()> {
-            log::info!("http server running");
             let mut http_server =
                 EspHttpServer::new(&esp_idf_svc::http::server::Configuration::default())?;
-            Self::http_server_add_page(&mut http_server, "/", Self::index_html())?;
-            Self::http_server_add_page(&mut http_server, "/temp", Self::temperature(true))?;
+            {
+                let board_state = board.lock().expect("Failed to lock board mutex");
+                Self::http_server_add_page(&mut http_server, "/", Self::index_html())?;
+                Self::http_server_add_page(
+                    &mut http_server,
+                    "/temp",
+                    Self::temperature(board_state.current_mcu_temperature),
+                )?;
+            }
+            log::info!("http server running");
             loop {
                 thread::sleep(Duration::from_secs(1));
+                let board_state = board.lock().expect("Failed to lock board mutex");
+                if board_state.exit == true {
+                    log::info!("http server stopped");
+                    break Ok(());
+                }
             }
         });
         Ok(handle)
@@ -346,8 +368,8 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         Self::templated("Hello from ESP32-S3!")
     }
 
-    fn temperature(val: bool) -> String {
-        Self::templated(format!("high: {}", val))
+    fn temperature(val: f32) -> String {
+        Self::templated(format!("mcu temperature: {}", val))
     }
 
     pub fn wifi_ssid(&self) -> &str {
@@ -360,11 +382,6 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
 
     pub fn get_mcu_temperature(&mut self) -> Result<f32> {
         let temp = self.mcu_temperature.get_celsius()?;
-        let mytemp = Arc::clone(&self.current_mcu_temperature);
-        if let Ok(mut tt) = mytemp.lock() {
-            *tt = temp;
-            // log::info!("set current_mcu_temperature: {:?}", *tt);
-        }
         Ok(temp)
     }
 

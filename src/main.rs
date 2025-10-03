@@ -1,9 +1,11 @@
 mod board;
 
+use crate::board::BoardEsp32State;
 use board::BspEsp32S3CoreBoard;
 use esp_idf_svc::hal::peripherals::Peripherals;
 use smart_leds::hsv::{hsv2rgb, Hsv};
 use smart_leds::SmartLedsWrite;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -13,13 +15,17 @@ fn main() -> anyhow::Result<()> {
 
     let peripherals = Peripherals::take()?;
     let mut board = BspEsp32S3CoreBoard::new(peripherals)?;
-    board.wifi_connect("RAYNEN".to_string(), "RN603933".to_string())?;
+    board.wifi_connect("esp32_2.4G".to_string(), "12345678..".to_string())?;
+    let board_state = BoardEsp32State::default();
     // 有需要的话可以在线程结束后回收
-    let _ble_server_handle = board.ble_server_start()?;
-    let _http_server_handle = board.test_http_server()?;
+    let board_http = Arc::new(Mutex::new(board_state));
+    let board_ble = Arc::clone(&board_http);
+    let board_state = Arc::clone(&board_http);
+    let _ble_server_handle = BspEsp32S3CoreBoard::ble_server_start(board_ble)?;
+    let _http_server_handle = BspEsp32S3CoreBoard::test_http_server(board_http)?;
 
     let mut hue: u8 = 0;
-
+    let mut loop_times = 0;
     loop {
         let pixels = std::iter::once(hsv2rgb(Hsv {
             hue,
@@ -32,5 +38,9 @@ fn main() -> anyhow::Result<()> {
         board.get_mcu_temperature()?;
         thread::sleep(Duration::from_millis(50));
         hue = hue.wrapping_add(10);
+        if loop_times % 100 == 0 {
+            log::info!("board status:{board_state:?}");
+        }
+        loop_times += 1;
     }
 }
