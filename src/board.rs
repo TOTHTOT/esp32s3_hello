@@ -19,6 +19,9 @@ use esp32_nimble::{
 };
 
 // ESP-IDF 服务封装
+use esp_idf_svc::hal::gpio::{AnyOutputPin, Gpio0, Gpio15, Gpio16, Output, OutputPin, PinDriver};
+use esp_idf_svc::hal::spi;
+use esp_idf_svc::hal::spi::SpiDeviceDriver;
 use esp_idf_svc::sys::{
     esp, esp_vfs_fat_mount_config_t, esp_vfs_fat_spiflash_mount, nvs_flash_erase, nvs_flash_init,
     wl_handle_t, ESP_ERR_NVS_NEW_VERSION_FOUND, ESP_ERR_NVS_NO_FREE_PAGES,
@@ -35,8 +38,9 @@ use esp_idf_svc::{
     sys,
     wifi::{AuthMethod, EspWifi},
 };
-
+use st7735_lcd::ST7735;
 // WS2812 LED 驱动
+use crate::display::display_init;
 use ws2812_esp32_rmt_driver::lib_smart_leds::Ws2812Esp32Rmt;
 
 // 默认连接的wifi
@@ -50,6 +54,11 @@ pub struct BspEsp32S3CoreBoard<'d> {
     fs_init: bool, // 标记文件系统是否初始化成功
     wifi_ssid: String,
     wifi_password: String,
+    // pub display: ST7735<
+    //     SpiDeviceDriver<'d, spi::SpiDriver<'d>>,
+    //     PinDriver<'d, DC, Output>,
+    //     PinDriver<'d, RST, Output>,
+    // >,
 }
 
 #[derive(Default, Debug)]
@@ -77,6 +86,15 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         if let Ok(_) = BspEsp32S3CoreBoard::init_fs() {
             fs_init = true;
         }
+        let display = display_init(
+            peripherals.spi2,
+            peripherals.pins.gpio18,
+            peripherals.pins.gpio17,
+            None::<Gpio0>,
+            Some(peripherals.pins.gpio21),
+            peripherals.pins.gpio16,
+            peripherals.pins.gpio15,
+        )?;
         Ok(Self {
             ws2812,
             wifi,
@@ -84,6 +102,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             wifi_ssid: WIFI_SSID.to_string(),
             wifi_password: WIFI_PASSWD.to_string(),
             fs_init,
+            // display,
         })
     }
 
@@ -130,7 +149,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             return Err(anyhow!(res));
         }
         log::info!("FAT mounted at /fat");
-        BspEsp32S3CoreBoard::test_fs_rw()?;
+        Self::test_fs_rw()?;
         Ok(())
     }
 

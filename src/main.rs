@@ -1,4 +1,5 @@
 mod board;
+mod display;
 
 use crate::board::BoardEsp32State;
 use board::BspEsp32S3CoreBoard;
@@ -23,7 +24,6 @@ fn main() -> anyhow::Result<()> {
     let board_state = Arc::clone(&board_http);
     let _ble_server_handle = BspEsp32S3CoreBoard::ble_server_start(board_ble)?;
     let _http_server_handle = BspEsp32S3CoreBoard::test_http_server(board_http)?;
-
     let mut hue: u8 = 0;
     let mut loop_times = 0;
     loop {
