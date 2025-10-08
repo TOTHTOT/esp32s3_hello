@@ -10,37 +10,39 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
-// Embedded SVC traits
+
+// 嵌入式服务与协议
 use embedded_svc::{http::Method, io::Write as EspWrite, wifi};
 
-// NimBLE (蓝牙)
+// BLE相关
 use esp32_nimble::{
     uuid128, BLEAdvertisedDevice, BLEAdvertisementData, BLEDevice, BLEScan, NimbleProperties,
 };
 
-// ESP-IDF 服务封装
-use esp_idf_svc::hal::gpio::{AnyOutputPin, Gpio0, Gpio15, Gpio16, Output, OutputPin, PinDriver};
-use esp_idf_svc::hal::spi;
-use esp_idf_svc::hal::spi::SpiDeviceDriver;
-use esp_idf_svc::sys::{
-    esp, esp_vfs_fat_mount_config_t, esp_vfs_fat_spiflash_mount, nvs_flash_erase, nvs_flash_init,
-    wl_handle_t, ESP_ERR_NVS_NEW_VERSION_FOUND, ESP_ERR_NVS_NO_FREE_PAGES,
-};
+// ESP-IDF核心服务与硬件抽象
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::{
-        prelude::Peripherals,
+        gpio::{Gpio0, Gpio15, Gpio16, Output, PinDriver},
+        prelude::*,
+        spi::{SpiDeviceDriver, SpiDriver},
         task::block_on,
         temp_sensor::{TempSensorConfig, TempSensorDriver},
     },
     http::server::EspHttpServer,
     nvs::{EspNvsPartition, NvsDefault},
     sys,
+    sys::{
+        esp, esp_vfs_fat_mount_config_t, esp_vfs_fat_spiflash_mount, nvs_flash_erase,
+        nvs_flash_init, wl_handle_t, ESP_ERR_NVS_NEW_VERSION_FOUND, ESP_ERR_NVS_NO_FREE_PAGES,
+    },
     wifi::{AuthMethod, EspWifi},
 };
-use st7735_lcd::ST7735;
-// WS2812 LED 驱动
+// 显示屏相关
 use crate::display::display_init;
+use st7735_lcd::ST7735;
+
+// WS2812 LED驱动
 use ws2812_esp32_rmt_driver::lib_smart_leds::Ws2812Esp32Rmt;
 
 // 默认连接的wifi
@@ -54,11 +56,11 @@ pub struct BspEsp32S3CoreBoard<'d> {
     fs_init: bool, // 标记文件系统是否初始化成功
     wifi_ssid: String,
     wifi_password: String,
-    // pub display: ST7735<
-    //     SpiDeviceDriver<'d, spi::SpiDriver<'d>>,
-    //     PinDriver<'d, DC, Output>,
-    //     PinDriver<'d, RST, Output>,
-    // >,
+    pub display: ST7735<
+        SpiDeviceDriver<'d, SpiDriver<'d>>,
+        PinDriver<'d, Gpio16, Output>,
+        PinDriver<'d, Gpio15, Output>,
+    >,
 }
 
 #[derive(Default, Debug)]
@@ -92,8 +94,8 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             peripherals.pins.gpio17,
             None::<Gpio0>,
             Some(peripherals.pins.gpio21),
-            peripherals.pins.gpio16,
-            peripherals.pins.gpio15,
+            PinDriver::output(peripherals.pins.gpio16)?,
+            PinDriver::output(peripherals.pins.gpio15)?,
         )?;
         Ok(Self {
             ws2812,
@@ -102,7 +104,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             wifi_ssid: WIFI_SSID.to_string(),
             wifi_password: WIFI_PASSWD.to_string(),
             fs_init,
-            // display,
+            display,
         })
     }
 
