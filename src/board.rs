@@ -39,7 +39,7 @@ use esp_idf_svc::{
     wifi::{AuthMethod, EspWifi},
 };
 // 显示屏相关
-use crate::display::display_init;
+use crate::display::st7735_display::display_init;
 use st7735_lcd::ST7735;
 
 // WS2812 LED驱动
