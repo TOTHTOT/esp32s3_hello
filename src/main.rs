@@ -1,5 +1,6 @@
 mod board;
 mod display;
+mod http_server;
 
 use crate::board::BoardEsp32State;
 use board::BspEsp32S3CoreBoard;
@@ -16,14 +17,13 @@ fn main() -> anyhow::Result<()> {
 
     let peripherals = Peripherals::take()?;
     let mut board = BspEsp32S3CoreBoard::new(peripherals)?;
-    board.wifi_connect("esp32_2.4G".to_string(), "12345678..".to_string())?;
     let board_state = BoardEsp32State::default();
     // 有需要的话可以在线程结束后回收
     let board_http = Arc::new(Mutex::new(board_state));
     let board_ble = Arc::clone(&board_http);
     let board_state = Arc::clone(&board_http);
     let _ble_server_handle = BspEsp32S3CoreBoard::ble_server_start(board_ble)?;
-    let _http_server_handle = BspEsp32S3CoreBoard::test_http_server(board_http)?;
+    let _http_server_handle = http_server::HttpServer::new(board_http)?;
     let mut hue: u8 = 0;
     let mut loop_times = 0;
     loop {

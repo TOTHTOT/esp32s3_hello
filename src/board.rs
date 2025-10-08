@@ -12,13 +12,15 @@ use std::{
 };
 
 // 嵌入式服务与协议
-use embedded_svc::{http::Method, io::Write as EspWrite, wifi};
+use embedded_svc::wifi;
 
 // BLE相关
 use esp32_nimble::{
     uuid128, BLEAdvertisedDevice, BLEAdvertisementData, BLEDevice, BLEScan, NimbleProperties,
 };
 
+// 显示屏相关
+use crate::display::st7735_display::display_init;
 // ESP-IDF核心服务与硬件抽象
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
@@ -29,7 +31,6 @@ use esp_idf_svc::{
         task::block_on,
         temp_sensor::{TempSensorConfig, TempSensorDriver},
     },
-    http::server::EspHttpServer,
     nvs::{EspNvsPartition, NvsDefault},
     sys,
     sys::{
@@ -38,8 +39,6 @@ use esp_idf_svc::{
     },
     wifi::{AuthMethod, EspWifi},
 };
-// 显示屏相关
-use crate::display::st7735_display::display_init;
 use st7735_lcd::ST7735;
 
 // WS2812 LED驱动
@@ -75,19 +74,11 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         let sysloop = EspSystemEventLoop::take()?;
         let nvs = EspNvsPartition::<NvsDefault>::take()?;
 
-        let wifi = EspWifi::new(peripherals.modem, sysloop, Some(nvs.clone()))?;
-        // Self::ble_scan(10000)?;
-        log::info!("start init ws2812");
-        let ws2812 = Ws2812Esp32Rmt::new(peripherals.rmt.channel0, peripherals.pins.gpio48)
-            .map_err(|e| anyhow!("Ws2812Esp32Rmt error: {:?}", e))?;
-
-        let mut temp_sensor =
-            TempSensorDriver::new(&TempSensorConfig::default(), peripherals.temp_sensor)?;
-        temp_sensor.enable()?;
         let mut fs_init = false;
         if let Ok(_) = BspEsp32S3CoreBoard::init_fs() {
             fs_init = true;
         }
+
         let display = display_init(
             peripherals.spi2,
             peripherals.pins.gpio18,
@@ -97,7 +88,16 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             PinDriver::output(peripherals.pins.gpio16)?,
             PinDriver::output(peripherals.pins.gpio15)?,
         )?;
-        Ok(Self {
+
+        let wifi = EspWifi::new(peripherals.modem, sysloop, Some(nvs.clone()))?;
+        log::info!("start init ws2812");
+        let ws2812 = Ws2812Esp32Rmt::new(peripherals.rmt.channel0, peripherals.pins.gpio48)
+            .map_err(|e| anyhow!("Ws2812Esp32Rmt error: {:?}", e))?;
+
+        let mut temp_sensor =
+            TempSensorDriver::new(&TempSensorConfig::default(), peripherals.temp_sensor)?;
+        temp_sensor.enable()?;
+        let mut board = Self {
             ws2812,
             wifi,
             mcu_temperature: temp_sensor,
@@ -105,7 +105,9 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             wifi_password: WIFI_PASSWD.to_string(),
             fs_init,
             display,
-        })
+        };
+        board.wifi_connect()?;
+        Ok(board)
     }
 
     fn init_fs() -> Result<()> {
@@ -174,11 +176,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
     }
 
     /// 连接wifi 传入 wifi 名称和密码
-    pub fn wifi_connect(
-        &mut self,
-        wifi_ssid: String,
-        wifi_passwd: String,
-    ) -> Result<(), anyhow::Error> {
+    pub fn wifi_connect(&mut self) -> Result<(), anyhow::Error> {
         if self.wifi.is_connected()? {
             log::info!("wifi is connected, now disconnecting");
             self.wifi.disconnect()?;
@@ -188,11 +186,9 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         self.wifi.start()?;
         // 构造wifi名字和密码
         let mut ssid = heapless::String::<32>::new();
-        let _ = ssid.push_str(wifi_ssid.as_str());
+        let _ = ssid.push_str(self.wifi_password.as_str());
         let mut password = heapless::String::<64>::new();
-        let _ = password.push_str(wifi_passwd.as_str());
-        self.wifi_password = wifi_passwd;
-        self.wifi_ssid = wifi_ssid;
+        let _ = password.push_str(self.wifi_ssid.as_str());
         self.wifi
             .set_configuration(&wifi::Configuration::Client(wifi::ClientConfiguration {
                 ssid,
@@ -201,7 +197,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
                 ..Default::default()
             }))?;
         log::info!("wifi start connect");
-        self.wifi.connect()?;
+        let _ = self.wifi.connect();
         Ok(())
     }
     /// 扫描附近蓝牙, 并返回扫描结果类型: BLEAdvertisedDevice
@@ -321,76 +317,6 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             }
         });
         Ok(handle)
-    }
-
-    // 开启http服务
-    pub fn test_http_server(
-        board: Arc<Mutex<BoardEsp32State>>,
-    ) -> Result<JoinHandle<Result<()>>, anyhow::Error> {
-        let handle = thread::spawn(move || -> Result<()> {
-            let mut http_server =
-                EspHttpServer::new(&esp_idf_svc::http::server::Configuration::default())?;
-            {
-                let board_state = board.lock().expect("Failed to lock board mutex");
-                Self::http_server_add_page(&mut http_server, "/", Self::index_html())?;
-                Self::http_server_add_page(
-                    &mut http_server,
-                    "/temp",
-                    Self::temperature(board_state.current_mcu_temperature),
-                )?;
-            }
-            log::info!("http server running");
-            loop {
-                thread::sleep(Duration::from_secs(1));
-                let board_state = board.lock().expect("Failed to lock board mutex");
-                if board_state.exit == true {
-                    log::info!("http server stopped");
-                    break Ok(());
-                }
-            }
-        });
-        Ok(handle)
-    }
-    // 添加一个页面
-    fn http_server_add_page(server: &mut EspHttpServer, url: &str, html: String) -> Result<()> {
-        server.fn_handler(url, Method::Get, move |request| {
-            let mut response = match request.into_ok_response() {
-                Ok(response) => response,
-                Err(err) => {
-                    log::warn!("Failed to read response: {:?}", err);
-                    return Err(());
-                }
-            };
-            response.write_all(html.as_bytes()).unwrap();
-            Ok(())
-        })?;
-        Ok(())
-    }
-
-    fn templated(content: impl AsRef<str>) -> String {
-        format!(
-            r#"
-    <!DOCTYPE html>
-    <html>
-        <head>
-            <meta charset="utf-8">
-            <title>esp-rs web server</title>
-        </head>
-        <body>
-            {}
-        </body>
-    </html>
-    "#,
-            content.as_ref()
-        )
-    }
-
-    fn index_html() -> String {
-        Self::templated("Hello from ESP32-S3!")
-    }
-
-    fn temperature(val: f32) -> String {
-        Self::templated(format!("mcu temperature: {}", val))
     }
 
     pub fn wifi_ssid(&self) -> &str {
