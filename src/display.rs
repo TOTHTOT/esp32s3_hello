@@ -42,7 +42,7 @@ pub mod st7735_display {
             &driver_config,
             &spi_config,
         )?;
-        let rgb = false;
+        let rgb = true;
         let inverted = false;
         let width = 128;
         let height = 160;
