@@ -107,6 +107,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             display,
         };
         board.wifi_connect()?;
+        log::info!("board init success");
         Ok(board)
     }
 
@@ -186,9 +187,9 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         self.wifi.start()?;
         // 构造wifi名字和密码
         let mut ssid = heapless::String::<32>::new();
-        let _ = ssid.push_str(self.wifi_password.as_str());
+        let _ = ssid.push_str(self.wifi_ssid.as_str());
         let mut password = heapless::String::<64>::new();
-        let _ = password.push_str(self.wifi_ssid.as_str());
+        let _ = password.push_str(self.wifi_password.as_str());
         self.wifi
             .set_configuration(&wifi::Configuration::Client(wifi::ClientConfiguration {
                 ssid,
@@ -196,8 +197,12 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
                 auth_method: AuthMethod::WPA2Personal,
                 ..Default::default()
             }))?;
-        log::info!("wifi start connect");
-        let _ = self.wifi.connect();
+        // let scan = self.wifi.scan()?;
+        // for rr in scan {
+        //     log::info!("scan: {:?}", rr);
+        // }
+        log::info!("wifi start connect, ");
+        self.wifi.connect()?;
         Ok(())
     }
     /// 扫描附近蓝牙, 并返回扫描结果类型: BLEAdvertisedDevice

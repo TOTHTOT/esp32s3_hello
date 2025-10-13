@@ -27,6 +27,7 @@ fn main() -> anyhow::Result<()> {
     let mut hue: u8 = 0;
     let mut loop_times = 0;
     loop {
+        thread::sleep(Duration::from_millis(50));
         let pixels = std::iter::once(hsv2rgb(Hsv {
             hue,
             sat: 255,
@@ -35,11 +36,11 @@ fn main() -> anyhow::Result<()> {
         if let Err(e) = board.ws2812.write(pixels) {
             log::error!("Ws2812 write error:{e}");
         }
-        board.get_mcu_temperature()?;
-        thread::sleep(Duration::from_millis(50));
+        let mut state = board_state.lock().expect("Could not lock board state");
+        state.current_mcu_temperature = board.get_mcu_temperature()?;
         hue = hue.wrapping_add(10);
         if loop_times % 100 == 0 {
-            log::info!("board status:{board_state:?}");
+            log::info!("board status:{state:?}");
         }
         loop_times += 1;
     }
