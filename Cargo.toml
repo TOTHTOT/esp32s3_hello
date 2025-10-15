@@ -19,6 +19,8 @@ opt-level = "z"
 
 [features]
 default = []
+use_ws2812 = []
+enable_wifi_scan = []
 
 experimental = ["esp-idf-svc/experimental"]
 
@@ -35,6 +37,8 @@ st7735-lcd = "0.10.0"
 embedded-graphics = "0.8.0"
 fugit = "0.3.7"
 embedded-hal = "1.0.0"
+xl9555 = { git = "https://github.com/KaidRommel/xl9555-rs.git" }
+
 # --- Optional Embassy Integration ---
 # esp-idf-svc = { version = "0.51", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
 

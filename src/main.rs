@@ -5,8 +5,6 @@ mod http_server;
 use crate::board::BoardEsp32State;
 use board::BspEsp32S3CoreBoard;
 use esp_idf_svc::hal::peripherals::Peripherals;
-use smart_leds::hsv::{hsv2rgb, Hsv};
-use smart_leds::SmartLedsWrite;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -24,23 +22,25 @@ fn main() -> anyhow::Result<()> {
     let board_state = Arc::clone(&board_http);
     let _ble_server_handle = BspEsp32S3CoreBoard::ble_server_start(board_ble)?;
     let _http_server_handle = http_server::HttpServer::new(board_http)?;
-    let mut hue: u8 = 0;
     let mut loop_times = 0;
+    #[cfg(feature = "use_ws2812")]
+    let mut hue: u8 = 0;
     loop {
         thread::sleep(Duration::from_millis(50));
-        let pixels = std::iter::once(hsv2rgb(Hsv {
-            hue,
-            sat: 255,
-            val: 8,
-        }));
-        if let Err(e) = board.ws2812.write(pixels) {
-            log::error!("Ws2812 write error:{e}");
-        }
         let mut state = board_state.lock().expect("Could not lock board state");
         state.current_mcu_temperature = board.get_mcu_temperature()?;
-        hue = hue.wrapping_add(10);
+        #[cfg(feature = "use_ws2812")]
+        {
+            hue = hue.wrapping_add(10);
+            board.rainbow_rgb(hue)?;
+        }
         if loop_times % 100 == 0 {
-            log::info!("board status:{state:?}");
+            // let cur_pin_state = board.xl9555.read_value(xl9555::Pin::P03)?;
+            // board.xl9555.set_value(xl9555::Pin::P03, !cur_pin_state)?;
+            log::info!(
+                "board status:{state:?}\nall_pin_state = {}",
+                board.xl9555.read_all_value()?
+            );
         }
         loop_times += 1;
     }

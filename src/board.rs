@@ -22,6 +22,7 @@ use esp32_nimble::{
 // 显示屏相关
 use crate::display::st7735_display::display_init;
 // ESP-IDF核心服务与硬件抽象
+use esp_idf_svc::hal::i2c::{I2cConfig, I2cDriver};
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::{
@@ -39,16 +40,24 @@ use esp_idf_svc::{
     },
     wifi::{AuthMethod, EspWifi},
 };
+#[cfg(feature = "use_ws2812")]
+use smart_leds::{
+    hsv::{hsv2rgb, Hsv},
+    SmartLedsWrite,
+};
 use st7735_lcd::ST7735;
 
 // WS2812 LED驱动
+#[cfg(feature = "use_ws2812")]
 use ws2812_esp32_rmt_driver::lib_smart_leds::Ws2812Esp32Rmt;
+use xl9555::driver::XL9555;
 
 // 默认连接的wifi
 const WIFI_SSID: &str = "esp32_2.4G";
 const WIFI_PASSWD: &str = "12345678..";
 
 pub struct BspEsp32S3CoreBoard<'d> {
+    #[cfg(feature = "use_ws2812")]
     pub ws2812: Ws2812Esp32Rmt<'d>,
     pub wifi: EspWifi<'d>,
     mcu_temperature: TempSensorDriver<'d>,
@@ -60,6 +69,7 @@ pub struct BspEsp32S3CoreBoard<'d> {
         PinDriver<'d, Gpio16, Output>,
         PinDriver<'d, Gpio15, Output>,
     >,
+    pub xl9555: XL9555<I2cDriver<'d>>,
 }
 
 #[derive(Default, Debug)]
@@ -91,13 +101,24 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
 
         let wifi = EspWifi::new(peripherals.modem, sysloop, Some(nvs.clone()))?;
         log::info!("start init ws2812");
+        #[cfg(feature = "use_ws2812")]
         let ws2812 = Ws2812Esp32Rmt::new(peripherals.rmt.channel0, peripherals.pins.gpio48)
             .map_err(|e| anyhow!("Ws2812Esp32Rmt error: {:?}", e))?;
 
         let mut temp_sensor =
             TempSensorDriver::new(&TempSensorConfig::default(), peripherals.temp_sensor)?;
         temp_sensor.enable()?;
+
+        let i2c_driver = I2cDriver::new(
+            peripherals.i2c0,
+            peripherals.pins.gpio41,
+            peripherals.pins.gpio42,
+            &I2cConfig::new().baudrate(FromValueType::kHz(100).into()),
+        )?;
+        let mut xl9555 = XL9555::init(i2c_driver, (false, false, false));
+        xl9555.xl9555_ioconfig(0b1111_0000_0000_0000)?;
         let mut board = Self {
+            #[cfg(feature = "use_ws2812")]
             ws2812,
             wifi,
             mcu_temperature: temp_sensor,
@@ -105,6 +126,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             wifi_password: WIFI_PASSWD.to_string(),
             fs_init,
             display,
+            xl9555,
         };
         board.wifi_connect()?;
         log::info!("board init success");
@@ -197,12 +219,26 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
                 auth_method: AuthMethod::WPA2Personal,
                 ..Default::default()
             }))?;
-        // let scan = self.wifi.scan()?;
-        // for rr in scan {
-        //     log::info!("scan: {:?}", rr);
-        // }
+        #[cfg(feature = "enable_wifi_scan")]
+        {
+            log::info!("wifi scan start");
+            let scan = self.wifi.scan()?;
+            for rr in scan {
+                log::info!("scan: {:?}", rr);
+            }
+        }
         log::info!("wifi start connect, ");
         self.wifi.connect()?;
+        Ok(())
+    }
+    #[cfg(feature = "use_ws2812")]
+    pub fn rainbow_rgb(&mut self, hue: u8) -> Result<()> {
+        let pixels = std::iter::once(hsv2rgb(Hsv {
+            hue,
+            sat: 255,
+            val: 8,
+        }));
+        self.ws2812.write(pixels)?;
         Ok(())
     }
     /// 扫描附近蓝牙, 并返回扫描结果类型: BLEAdvertisedDevice
