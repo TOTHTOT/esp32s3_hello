@@ -1,3 +1,4 @@
+#[cfg(feature = "use_st7735")]
 pub mod st7735_display {
     use embedded_graphics::{
         draw_target::DrawTarget,
@@ -16,7 +17,7 @@ pub mod st7735_display {
         spi::{SpiDeviceDriver, SpiDriver},
     };
 
-    use st7735_lcd::{Orientation, ST7735};
+    pub use st7735_lcd::{Orientation, ST7735};
     pub fn display_init<'d, DC, RST>(
         spi: impl Peripheral<P = impl esp_idf_svc::hal::spi::SpiAnyPins> + 'd,
         sclk: impl Peripheral<P = impl OutputPin> + 'd,
@@ -62,4 +63,9 @@ pub mod st7735_display {
         image.draw(&mut display).unwrap();
         Ok(display)
     }
+}
+
+#[cfg(feature = "use_st7789")]
+pub mod st7789_display {
+    pub fn display_init() {}
 }

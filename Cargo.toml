@@ -18,9 +18,11 @@ debug = true    # Symbols are nice and they don't increase the size on Flash
 opt-level = "z"
 
 [features]
-default = []
+default = ["use_st7789"]
 use_ws2812 = []
 enable_wifi_scan = []
+use_st7735 = []
+use_st7789 = []
 
 experimental = ["esp-idf-svc/experimental"]
 

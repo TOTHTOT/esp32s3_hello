@@ -20,7 +20,9 @@ use esp32_nimble::{
 };
 
 // 显示屏相关
-use crate::display::st7735_display::display_init;
+#[cfg(feature = "use_st7735")]
+use crate::display::st7735_display::{display_init, ST7735};
+
 // ESP-IDF核心服务与硬件抽象
 use esp_idf_svc::hal::i2c::{I2cConfig, I2cDriver};
 use esp_idf_svc::{
@@ -40,14 +42,12 @@ use esp_idf_svc::{
     },
     wifi::{AuthMethod, EspWifi},
 };
+// WS2812 LED驱动
 #[cfg(feature = "use_ws2812")]
 use smart_leds::{
     hsv::{hsv2rgb, Hsv},
     SmartLedsWrite,
 };
-use st7735_lcd::ST7735;
-
-// WS2812 LED驱动
 #[cfg(feature = "use_ws2812")]
 use ws2812_esp32_rmt_driver::lib_smart_leds::Ws2812Esp32Rmt;
 use xl9555::driver::XL9555;
@@ -64,6 +64,7 @@ pub struct BspEsp32S3CoreBoard<'d> {
     fs_init: bool, // 标记文件系统是否初始化成功
     wifi_ssid: String,
     wifi_password: String,
+    #[cfg(feature = "use_st7735")]
     pub display: ST7735<
         SpiDeviceDriver<'d, SpiDriver<'d>>,
         PinDriver<'d, Gpio16, Output>,
@@ -89,6 +90,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             fs_init = true;
         }
 
+        #[cfg(feature = "use_st7735")]
         let display = display_init(
             peripherals.spi2,
             peripherals.pins.gpio18,
@@ -125,6 +127,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             wifi_ssid: WIFI_SSID.to_string(),
             wifi_password: WIFI_PASSWD.to_string(),
             fs_init,
+            #[cfg(feature = "use_st7735")]
             display,
             xl9555,
         };
