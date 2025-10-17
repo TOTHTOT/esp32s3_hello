@@ -14,7 +14,8 @@ fn main() -> anyhow::Result<()> {
     esp_idf_svc::log::EspLogger::initialize_default();
 
     let peripherals = Peripherals::take()?;
-    let mut board = BspEsp32S3CoreBoard::new(peripherals)?;
+    let mut display_buffer = [0_u8; 512];
+    let mut board = BspEsp32S3CoreBoard::new(peripherals, &mut display_buffer)?;
     let board_state = BoardEsp32State::default();
     // 有需要的话可以在线程结束后回收
     let board_http = Arc::new(Mutex::new(board_state));

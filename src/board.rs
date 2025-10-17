@@ -2,6 +2,10 @@
 use anyhow::{anyhow, Result};
 
 // 标准库
+use embedded_graphics::pixelcolor::Rgb565;
+use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
+// 嵌入式服务与协议
+use embedded_svc::wifi;
 use std::{
     ffi::CString,
     fs::{File, OpenOptions},
@@ -11,26 +15,21 @@ use std::{
     time::Duration,
 };
 
-// 嵌入式服务与协议
-use embedded_svc::wifi;
-
+// 显示屏相关
+use crate::display;
 // BLE相关
 use esp32_nimble::{
     uuid128, BLEAdvertisedDevice, BLEAdvertisementData, BLEDevice, BLEScan, NimbleProperties,
 };
-
-// 显示屏相关
-#[cfg(feature = "use_st7735")]
-use crate::display::st7735_display::{display_init, ST7735};
 
 // ESP-IDF核心服务与硬件抽象
 use esp_idf_svc::hal::i2c::{I2cConfig, I2cDriver};
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::{
-        gpio::{Gpio0, Gpio15, Gpio16, Output, PinDriver},
+        gpio::{Gpio0, Gpio15, Gpio16, Gpio21, Output, PinDriver},
         prelude::*,
-        spi::{SpiDeviceDriver, SpiDriver},
+        spi::{SpiBusDriver, SpiDriver},
         task::block_on,
         temp_sensor::{TempSensorConfig, TempSensorDriver},
     },
@@ -42,6 +41,9 @@ use esp_idf_svc::{
     },
     wifi::{AuthMethod, EspWifi},
 };
+use mipidsi::interface::{Interface, InterfacePixelFormat, SpiInterface};
+use mipidsi::models::ST7789;
+use mipidsi::NoResetPin;
 // WS2812 LED驱动
 #[cfg(feature = "use_ws2812")]
 use smart_leds::{
@@ -52,11 +54,20 @@ use smart_leds::{
 use ws2812_esp32_rmt_driver::lib_smart_leds::Ws2812Esp32Rmt;
 use xl9555::driver::XL9555;
 
-// 默认连接的wifi
+/// 默认连接的wifi
 const WIFI_SSID: &str = "esp32_2.4G";
 const WIFI_PASSWD: &str = "12345678..";
 
-pub struct BspEsp32S3CoreBoard<'d> {
+/// 屏幕引脚定义
+type CsPin<'d> = PinDriver<'d, Gpio21, Output>;
+type DcPin<'d> = PinDriver<'d, Gpio16, Output>;
+#[allow(dead_code)]
+type RstPin<'d> = PinDriver<'d, Gpio15, Output>;
+type DisplayModel = ST7789;
+pub struct BspEsp32S3CoreBoard<'d>
+where
+// MODEL: Model<ColorFormat = Rgb565>,
+{
     #[cfg(feature = "use_ws2812")]
     pub ws2812: Ws2812Esp32Rmt<'d>,
     pub wifi: EspWifi<'d>,
@@ -64,11 +75,16 @@ pub struct BspEsp32S3CoreBoard<'d> {
     fs_init: bool, // 标记文件系统是否初始化成功
     wifi_ssid: String,
     wifi_password: String,
-    #[cfg(feature = "use_st7735")]
-    pub display: ST7735<
-        SpiDeviceDriver<'d, SpiDriver<'d>>,
-        PinDriver<'d, Gpio16, Output>,
-        PinDriver<'d, Gpio15, Output>,
+    pub display: Option<
+        mipidsi::Display<
+            SpiInterface<
+                'd,
+                ExclusiveDevice<SpiBusDriver<'d, SpiDriver<'d>>, CsPin<'d>, NoDelay>,
+                DcPin<'d>,
+            >,
+            DisplayModel,
+            NoResetPin,
+        >,
     >,
     pub xl9555: XL9555<I2cDriver<'d>>,
 }
@@ -80,8 +96,18 @@ pub struct BoardEsp32State {
 }
 
 #[allow(dead_code)]
-impl<'d> BspEsp32S3CoreBoard<'d> {
-    pub fn new(peripherals: Peripherals) -> Result<Self> {
+impl<'d> BspEsp32S3CoreBoard<'d>
+where
+    // MODEL: Model<ColorFormat = Rgb565>,
+    Rgb565: InterfacePixelFormat<
+        <SpiInterface<
+            'd,
+            ExclusiveDevice<SpiBusDriver<'d, SpiDriver<'d>>, CsPin<'d>, NoDelay>,
+            DcPin<'d>,
+        > as Interface>::Word,
+    >,
+{
+    pub fn new(peripherals: Peripherals, display_buf: &'d mut [u8]) -> Result<Self> {
         let sysloop = EspSystemEventLoop::take()?;
         let nvs = EspNvsPartition::<NvsDefault>::take()?;
 
@@ -89,16 +115,26 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         if let Ok(_) = BspEsp32S3CoreBoard::init_fs() {
             fs_init = true;
         }
-
-        #[cfg(feature = "use_st7735")]
-        let display = display_init(
+        // 初始化spi, 这初始化能够让spi外设被多个设备使用
+        let driver_config = Default::default();
+        let spi_drv = SpiDriver::new(
             peripherals.spi2,
             peripherals.pins.gpio18,
             peripherals.pins.gpio17,
             None::<Gpio0>,
-            Some(peripherals.pins.gpio21),
-            PinDriver::output(peripherals.pins.gpio16)?,
-            PinDriver::output(peripherals.pins.gpio15)?,
+            &driver_config,
+        )?;
+        let spi_config =
+            esp_idf_svc::hal::spi::SpiConfig::new().baudrate(FromValueType::MHz(30).into());
+        let spi_buf = SpiBusDriver::new(spi_drv, &spi_config)?;
+        let model = ST7789;
+        let display = display::new(
+            spi_buf,
+            PinDriver::output(peripherals.pins.gpio21)?,
+            PinDriver::output(peripherals.pins.gpio16)?, // 实际上xl9555的io13
+            PinDriver::output(peripherals.pins.gpio15)?, // 实际上xl9555的io12
+            model,
+            display_buf,
         )?;
 
         let wifi = EspWifi::new(peripherals.modem, sysloop, Some(nvs.clone()))?;
@@ -127,8 +163,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             wifi_ssid: WIFI_SSID.to_string(),
             wifi_password: WIFI_PASSWD.to_string(),
             fs_init,
-            #[cfg(feature = "use_st7735")]
-            display,
+            display: Some(display),
             xl9555,
         };
         board.wifi_connect()?;

@@ -35,11 +35,11 @@ ws2812-esp32-rmt-driver = { version = "0.12.0", features = ["smart-leds-trait"] 
 embedded-svc = "0.28.1"
 heapless = "0.8.0"
 esp32-nimble = "0.11.1"
-st7735-lcd = "0.10.0"
 embedded-graphics = "0.8.0"
-fugit = "0.3.7"
 embedded-hal = "1.0.0"
 xl9555 = { git = "https://github.com/KaidRommel/xl9555-rs.git" }
+mipidsi = "0.9.0"
+embedded-hal-bus = "0.2.0"
 
 # --- Optional Embassy Integration ---
 # esp-idf-svc = { version = "0.51", features = ["critical-section", "embassy-time-driver", "embassy-sync"] }
