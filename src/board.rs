@@ -1,11 +1,19 @@
 // 错误处理
 use anyhow::{anyhow, Result};
 
+// 显示屏相关
+use crate::display;
+// 嵌入式服务与协议
+use core::cell::RefCell;
 // 标准库
 use embedded_graphics::pixelcolor::Rgb565;
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
-// 嵌入式服务与协议
 use embedded_svc::wifi;
+// BLE相关
+use esp32_nimble::{
+    uuid128, BLEAdvertisedDevice, BLEAdvertisementData, BLEDevice, BLEScan, NimbleProperties,
+};
+use std::rc::Rc;
 use std::{
     ffi::CString,
     fs::{File, OpenOptions},
@@ -13,13 +21,6 @@ use std::{
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
     time::Duration,
-};
-
-// 显示屏相关
-use crate::display;
-// BLE相关
-use esp32_nimble::{
-    uuid128, BLEAdvertisedDevice, BLEAdvertisementData, BLEDevice, BLEScan, NimbleProperties,
 };
 
 // ESP-IDF核心服务与硬件抽象
@@ -60,9 +61,9 @@ const WIFI_PASSWD: &str = "12345678..";
 
 /// 屏幕引脚定义
 type CsPin<'d> = PinDriver<'d, Gpio21, Output>;
-type DcPin<'d> = PinDriver<'d, Gpio16, Output>;
-#[allow(dead_code)]
-type RstPin<'d> = PinDriver<'d, Gpio15, Output>;
+type DcPin<'d> = xl9555::io::Output<'d, I2cDriver<'d>>;
+// #[allow(dead_code)]
+type RstPin<'d> = xl9555::io::Output<'d, I2cDriver<'d>>;
 type DisplayModel = ST7789;
 pub struct BspEsp32S3CoreBoard<'d>
 where
@@ -86,7 +87,8 @@ where
             NoResetPin,
         >,
     >,
-    pub xl9555: XL9555<I2cDriver<'d>>,
+
+    pub xl9555: RefCell<XL9555<I2cDriver<'d>>>,
 }
 
 #[derive(Default, Debug)]
@@ -124,18 +126,6 @@ where
             None::<Gpio0>,
             &driver_config,
         )?;
-        let spi_config =
-            esp_idf_svc::hal::spi::SpiConfig::new().baudrate(FromValueType::MHz(30).into());
-        let spi_buf = SpiBusDriver::new(spi_drv, &spi_config)?;
-        let model = ST7789;
-        let display = display::new(
-            spi_buf,
-            PinDriver::output(peripherals.pins.gpio21)?,
-            PinDriver::output(peripherals.pins.gpio16)?, // 实际上xl9555的io13
-            PinDriver::output(peripherals.pins.gpio15)?, // 实际上xl9555的io12
-            model,
-            display_buf,
-        )?;
 
         let wifi = EspWifi::new(peripherals.modem, sysloop, Some(nvs.clone()))?;
         log::info!("start init ws2812");
@@ -155,6 +145,22 @@ where
         )?;
         let mut xl9555 = XL9555::init(i2c_driver, (false, false, false));
         xl9555.xl9555_ioconfig(0b1111_0000_0000_0000)?;
+        let xl9555_ref = RefCell::new(xl9555);
+
+        let spi_config =
+            esp_idf_svc::hal::spi::SpiConfig::new().baudrate(FromValueType::MHz(30).into());
+        let spi_buf = SpiBusDriver::new(spi_drv, &spi_config)?;
+        let model = ST7789;
+        let dc_pin = xl9555::io::Output::new(&xl9555_ref, xl9555::Pin::P13, xl9555::PinState::Low);
+        let rst_pin = xl9555::io::Output::new(&xl9555_ref, xl9555::Pin::P12, xl9555::PinState::Low);
+        let display = display::new(
+            spi_buf,
+            PinDriver::output(peripherals.pins.gpio21)?,
+            dc_pin,  // 实际上xl9555的io13
+            rst_pin, // 实际上xl9555的io12
+            model,
+            display_buf,
+        )?;
         let mut board = Self {
             #[cfg(feature = "use_ws2812")]
             ws2812,
@@ -164,7 +170,7 @@ where
             wifi_password: WIFI_PASSWD.to_string(),
             fs_init,
             display: Some(display),
-            xl9555,
+            xl9555: xl9555_ref,
         };
         board.wifi_connect()?;
         log::info!("board init success");
