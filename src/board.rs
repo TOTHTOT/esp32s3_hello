@@ -2,11 +2,12 @@
 use anyhow::{anyhow, Result};
 
 // 显示屏相关
+#[cfg(feature = "use_st7789")]
 use crate::display;
 // 嵌入式服务与协议
 use core::cell::RefCell;
 // 标准库
-use embedded_graphics::pixelcolor::Rgb565;
+#[cfg(feature = "use_st7789")]
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
 use embedded_svc::wifi;
 // BLE相关
@@ -18,7 +19,7 @@ use esp_idf_svc::hal::i2c::{I2cConfig, I2cDriver};
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::{
-        gpio::{Gpio0, Gpio21, Output, PinDriver},
+        gpio::{Gpio0, Gpio13, Gpio21, Output, PinDriver},
         prelude::*,
         spi::{SpiBusDriver, SpiDriver},
         task::block_on,
@@ -32,8 +33,11 @@ use esp_idf_svc::{
     },
     wifi::{AuthMethod, EspWifi},
 };
-use mipidsi::interface::{Interface, InterfacePixelFormat, SpiInterface};
+#[cfg(feature = "use_st7789")]
+use mipidsi::interface::SpiInterface;
+#[cfg(feature = "use_st7789")]
 use mipidsi::models::ST7789;
+#[cfg(feature = "use_st7789")]
 use mipidsi::NoResetPin;
 // WS2812 LED驱动
 #[cfg(feature = "use_ws2812")]
@@ -59,11 +63,13 @@ const WIFI_SSID: &str = "esp32_2.4G";
 const WIFI_PASSWD: &str = "12345678..";
 
 /// 屏幕引脚定义
+#[cfg(feature = "use_st7789")]
 type CsPin<'d> = PinDriver<'d, Gpio21, Output>;
-type DcPin<'d> = xl9555::io::Output<'d, I2cDriver<'d>>;
-// #[allow(dead_code)]
-type RstPin<'d> = xl9555::io::Output<'d, I2cDriver<'d>>;
-
+#[cfg(feature = "use_st7789")]
+type DcPin<'d> = PinDriver<'d, Gpio13, Output>;
+#[allow(dead_code)]
+type Xl9555Pin<'d> = xl9555::io::Output<'d, I2cDriver<'d>>;
+#[cfg(feature = "use_st7789")]
 type MyDisplay<'d> = mipidsi::Display<
     SpiInterface<
         'd,
@@ -73,6 +79,8 @@ type MyDisplay<'d> = mipidsi::Display<
     DisplayModel,
     NoResetPin,
 >;
+
+#[cfg(feature = "use_st7789")]
 type DisplayModel = ST7789;
 pub struct BspEsp32S3CoreBoard<'d> {
     #[cfg(feature = "use_ws2812")]
@@ -82,8 +90,12 @@ pub struct BspEsp32S3CoreBoard<'d> {
     fs_init: bool, // 标记文件系统是否初始化成功
     wifi_ssid: String,
     wifi_password: String,
+    #[cfg(feature = "use_st7789")]
+    display_rst_pin: xl9555::Pin,
+    #[cfg(feature = "use_st7789")]
+    display_backlight_pin: xl9555::Pin,
+    #[cfg(feature = "use_st7789")]
     pub display: Option<MyDisplay<'d>>,
-
     pub xl9555: Rc<RefCell<XL9555<I2cDriver<'d>>>>,
 }
 
@@ -94,17 +106,7 @@ pub struct BoardEsp32State {
 }
 
 #[allow(dead_code)]
-impl<'d> BspEsp32S3CoreBoard<'d>
-where
-    // MODEL: Model<ColorFormat = Rgb565>,
-    Rgb565: InterfacePixelFormat<
-        <SpiInterface<
-            'd,
-            ExclusiveDevice<SpiBusDriver<'d, SpiDriver<'d>>, CsPin<'d>, NoDelay>,
-            DcPin<'d>,
-        > as Interface>::Word,
-    >,
-{
+impl<'d> BspEsp32S3CoreBoard<'d> {
     pub fn new(peripherals: Peripherals, display_buf: &'d mut [u8]) -> Result<Self> {
         let sysloop = EspSystemEventLoop::take()?;
         let nvs = EspNvsPartition::<NvsDefault>::take()?;
@@ -151,40 +153,43 @@ where
             wifi_ssid: WIFI_SSID.to_string(),
             wifi_password: WIFI_PASSWD.to_string(),
             fs_init,
+            #[cfg(feature = "use_st7789")]
             display: None,
             xl9555: xl9555_ref,
+            #[cfg(feature = "use_st7789")]
+            display_backlight_pin: xl9555::Pin::P13,
+            #[cfg(feature = "use_st7789")]
+            display_rst_pin: xl9555::Pin::P12,
         };
 
         let spi_config =
             esp_idf_svc::hal::spi::SpiConfig::new().baudrate(FromValueType::MHz(30).into());
         let spi_bus_drv = SpiBusDriver::new(spi_drv, &spi_config)?;
-        let backlight_pin =
-            xl9555::io::Output::new(&board.xl9555, xl9555::Pin::P13, xl9555::PinState::High);
-        let rst_pin =
-            xl9555::io::Output::new(&board.xl9555, xl9555::Pin::P12, xl9555::PinState::High);
-        let display = display::new(
-            spi_bus_drv,
-            PinDriver::output(peripherals.pins.gpio21)?,
-            PinDriver::output(peripherals.pins.gpio13)?,
-            rst_pin,
-            ST7789,
-            display_buf,
-            240,
-            320,
-        )?;
-        std::thread::sleep(std::time::Duration::from_micros(1000));
-        // board.display = Some(display);
+        #[cfg(feature = "use_st7789")]
+        {
+            let _backlight_pin = xl9555::io::Output::new(
+                &board.xl9555,
+                board.display_backlight_pin,
+                xl9555::PinState::High,
+            );
+            let _rst_pin = xl9555::io::Output::new(
+                &board.xl9555,
+                board.display_rst_pin,
+                xl9555::PinState::High,
+            );
+            let display = display::new(
+                spi_bus_drv,
+                PinDriver::output(peripherals.pins.gpio21)?,
+                PinDriver::output(peripherals.pins.gpio13)?,
+                ST7789,
+                display_buf,
+                240,
+                320,
+            )?;
+            board.display = Some(display);
+        }
         log::info!("board init success");
         Ok(board)
-        // Ok(Self {
-        //     wifi: board.wifi,
-        //     mcu_temperature: board.mcu_temperature,
-        //     fs_init: board.fs_init,
-        //     wifi_password: board.wifi_password.clone(),
-        //     wifi_ssid: board.wifi_ssid.clone(),
-        //     display: Some(display),
-        //     xl9555: board.xl9555,
-        // })
     }
 
     fn init_fs() -> Result<()> {
@@ -433,5 +438,38 @@ where
 
     pub fn set_fs_init(&mut self, fs_init: bool) {
         self.fs_init = fs_init;
+    }
+
+    /// 屏幕复位
+    #[cfg(feature = "use_st7789")]
+    pub fn display_rst(&self) -> Result<()> {
+        if self.display.is_none() {
+            return Err(anyhow::Error::msg("display is none"));
+        }
+        self.xl9555
+            .borrow_mut()
+            .set_value(self.display_rst_pin, false)?;
+        thread::sleep(Duration::from_micros(10));
+        self.xl9555
+            .borrow_mut()
+            .set_value(self.display_rst_pin, true)?;
+        Ok(())
+    }
+    /// 设置屏幕背光, 目前的显示屏的背光引脚有xl9555控制基本不支持pwm, 所以暂时用true和false控制
+    #[cfg(feature = "use_st7789")]
+    pub fn display_set_backlight(&self, backlight: u8) -> Result<()> {
+        if self.display.is_none() {
+            return Err(anyhow::Error::msg("display is none"));
+        }
+        if backlight > 0 {
+            self.xl9555
+                .borrow_mut()
+                .set_value(self.display_backlight_pin, true)?;
+        } else {
+            self.xl9555
+                .borrow_mut()
+                .set_value(self.display_backlight_pin, false)?;
+        }
+        Ok(())
     }
 }

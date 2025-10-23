@@ -16,11 +16,10 @@ use mipidsi::{
     {options::ColorInversion, Builder},
 };
 
-pub fn new<'d, DC, RST, CS, MODEL>(
+pub fn new<'d, DC, CS, MODEL>(
     spi: SpiBusDriver<'d, SpiDriver<'d>>,
     cs: CS,
     dc: DC,
-    rst: RST,
     model: MODEL,
     buffer: &'d mut [u8],
     width: u16,
@@ -35,14 +34,12 @@ pub fn new<'d, DC, RST, CS, MODEL>(
     where
         CS: embedded_hal::digital::OutputPin,
         DC: embedded_hal::digital::OutputPin,
-        RST: embedded_hal::digital::OutputPin,
         MODEL: Model<ColorFormat=Rgb565>,
         Rgb565: InterfacePixelFormat<
             <SpiInterface<'d, ExclusiveDevice<SpiBusDriver<'d, SpiDriver<'d>>, CS, NoDelay>, DC> as Interface>::Word
         >,
     {
     let spi_device = ExclusiveDevice::new_no_delay(spi, cs).unwrap();
-    let _rst = rst;
     let di = SpiInterface::new(spi_device, dc, buffer);
     let mut delay = FreeRtos;
     let mut display = Builder::new(model, di)

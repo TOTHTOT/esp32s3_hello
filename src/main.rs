@@ -39,7 +39,7 @@ fn main() -> anyhow::Result<()> {
             // let cur_pin_state = board.xl9555.read_value(xl9555::Pin::P03)?;
             // board.xl9555.set_value(xl9555::Pin::P03, !cur_pin_state)?;
             log::info!(
-                "board status:{state:?}\nall_pin_state = {}",
+                "board status:{state:?}\nall_pin_state = {:016b}",
                 board.xl9555.borrow_mut().read_all_value()?
             );
         }
