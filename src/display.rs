@@ -19,10 +19,12 @@ use mipidsi::{
 pub fn new<'d, DC, RST, CS, MODEL>(
     spi: SpiBusDriver<'d, SpiDriver<'d>>,
     cs: CS,
-        dc: DC,
-        rst: RST,
+    dc: DC,
+    rst: RST,
     model: MODEL,
     buffer: &'d mut [u8],
+    width: u16,
+    height: u16,
 ) -> anyhow::Result<
     mipidsi::Display<
         SpiInterface<'d, ExclusiveDevice<SpiBusDriver<'d, SpiDriver<'d>>, CS, NoDelay>, DC>,
@@ -44,11 +46,11 @@ pub fn new<'d, DC, RST, CS, MODEL>(
     let di = SpiInterface::new(spi_device, dc, buffer);
     let mut delay = FreeRtos;
     let mut display = Builder::new(model, di)
-        .display_size(240, 240)
+        .display_size(width, height)
         .invert_colors(ColorInversion::Inverted)
         .init(&mut delay)
         .unwrap();
-    display.clear(Rgb565::BLACK).unwrap();
+    display.clear(Rgb565::WHITE).unwrap();
 
     let image_raw: ImageRawLE<Rgb565> = ImageRaw::new(include_bytes!("../assets/ferris.raw"), 86);
     let image = Image::new(&image_raw, Point::new(26, 8));

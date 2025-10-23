@@ -117,8 +117,8 @@ where
         let driver_config = Default::default();
         let spi_drv = SpiDriver::new(
             peripherals.spi2,
-            peripherals.pins.gpio18,
-            peripherals.pins.gpio17,
+            peripherals.pins.gpio12,
+            peripherals.pins.gpio11,
             None::<Gpio0>,
             &driver_config,
         )?;
@@ -157,19 +157,22 @@ where
 
         let spi_config =
             esp_idf_svc::hal::spi::SpiConfig::new().baudrate(FromValueType::MHz(30).into());
-        let spi_buf = SpiBusDriver::new(spi_drv, &spi_config)?;
-        let dc_pin =
-            xl9555::io::Output::new(&board.xl9555, xl9555::Pin::P13, xl9555::PinState::Low);
+        let spi_bus_drv = SpiBusDriver::new(spi_drv, &spi_config)?;
+        let backlight_pin =
+            xl9555::io::Output::new(&board.xl9555, xl9555::Pin::P13, xl9555::PinState::High);
         let rst_pin =
-            xl9555::io::Output::new(&board.xl9555, xl9555::Pin::P12, xl9555::PinState::Low);
+            xl9555::io::Output::new(&board.xl9555, xl9555::Pin::P12, xl9555::PinState::High);
         let display = display::new(
-            spi_buf,
+            spi_bus_drv,
             PinDriver::output(peripherals.pins.gpio21)?,
-            dc_pin,
+            PinDriver::output(peripherals.pins.gpio13)?,
             rst_pin,
             ST7789,
             display_buf,
+            240,
+            320,
         )?;
+        std::thread::sleep(std::time::Duration::from_micros(1000));
         // board.display = Some(display);
         log::info!("board init success");
         Ok(board)
