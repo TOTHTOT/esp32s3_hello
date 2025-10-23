@@ -13,22 +13,12 @@ use embedded_svc::wifi;
 use esp32_nimble::{
     uuid128, BLEAdvertisedDevice, BLEAdvertisementData, BLEDevice, BLEScan, NimbleProperties,
 };
-use std::rc::Rc;
-use std::{
-    ffi::CString,
-    fs::{File, OpenOptions},
-    io::{Read as StdRead, Write as StdWrite},
-    sync::{Arc, Mutex},
-    thread::{self, JoinHandle},
-    time::Duration,
-};
-
 // ESP-IDF核心服务与硬件抽象
 use esp_idf_svc::hal::i2c::{I2cConfig, I2cDriver};
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::{
-        gpio::{Gpio0, Gpio15, Gpio16, Gpio21, Output, PinDriver},
+        gpio::{Gpio0, Gpio21, Output, PinDriver},
         prelude::*,
         spi::{SpiBusDriver, SpiDriver},
         task::block_on,
@@ -51,6 +41,15 @@ use smart_leds::{
     hsv::{hsv2rgb, Hsv},
     SmartLedsWrite,
 };
+use std::rc::Rc;
+use std::{
+    ffi::CString,
+    fs::{File, OpenOptions},
+    io::{Read as StdRead, Write as StdWrite},
+    sync::{Arc, Mutex},
+    thread::{self, JoinHandle},
+    time::Duration,
+};
 #[cfg(feature = "use_ws2812")]
 use ws2812_esp32_rmt_driver::lib_smart_leds::Ws2812Esp32Rmt;
 use xl9555::driver::XL9555;
@@ -64,11 +63,18 @@ type CsPin<'d> = PinDriver<'d, Gpio21, Output>;
 type DcPin<'d> = xl9555::io::Output<'d, I2cDriver<'d>>;
 // #[allow(dead_code)]
 type RstPin<'d> = xl9555::io::Output<'d, I2cDriver<'d>>;
+
+type MyDisplay<'d> = mipidsi::Display<
+    SpiInterface<
+        'd,
+        ExclusiveDevice<SpiBusDriver<'d, SpiDriver<'d>>, CsPin<'d>, NoDelay>,
+        DcPin<'d>,
+    >,
+    DisplayModel,
+    NoResetPin,
+>;
 type DisplayModel = ST7789;
-pub struct BspEsp32S3CoreBoard<'d>
-where
-// MODEL: Model<ColorFormat = Rgb565>,
-{
+pub struct BspEsp32S3CoreBoard<'d> {
     #[cfg(feature = "use_ws2812")]
     pub ws2812: Ws2812Esp32Rmt<'d>,
     pub wifi: EspWifi<'d>,
@@ -76,19 +82,9 @@ where
     fs_init: bool, // 标记文件系统是否初始化成功
     wifi_ssid: String,
     wifi_password: String,
-    pub display: Option<
-        mipidsi::Display<
-            SpiInterface<
-                'd,
-                ExclusiveDevice<SpiBusDriver<'d, SpiDriver<'d>>, CsPin<'d>, NoDelay>,
-                DcPin<'d>,
-            >,
-            DisplayModel,
-            NoResetPin,
-        >,
-    >,
+    pub display: Option<MyDisplay<'d>>,
 
-    pub xl9555: RefCell<XL9555<I2cDriver<'d>>>,
+    pub xl9555: Rc<RefCell<XL9555<I2cDriver<'d>>>>,
 }
 
 #[derive(Default, Debug)]
@@ -145,22 +141,8 @@ where
         )?;
         let mut xl9555 = XL9555::init(i2c_driver, (false, false, false));
         xl9555.xl9555_ioconfig(0b1111_0000_0000_0000)?;
-        let xl9555_ref = RefCell::new(xl9555);
+        let xl9555_ref = Rc::new(RefCell::new(xl9555));
 
-        let spi_config =
-            esp_idf_svc::hal::spi::SpiConfig::new().baudrate(FromValueType::MHz(30).into());
-        let spi_buf = SpiBusDriver::new(spi_drv, &spi_config)?;
-        let model = ST7789;
-        let dc_pin = xl9555::io::Output::new(&xl9555_ref, xl9555::Pin::P13, xl9555::PinState::Low);
-        let rst_pin = xl9555::io::Output::new(&xl9555_ref, xl9555::Pin::P12, xl9555::PinState::Low);
-        let display = display::new(
-            spi_buf,
-            PinDriver::output(peripherals.pins.gpio21)?,
-            dc_pin,  // 实际上xl9555的io13
-            rst_pin, // 实际上xl9555的io12
-            model,
-            display_buf,
-        )?;
         let mut board = Self {
             #[cfg(feature = "use_ws2812")]
             ws2812,
@@ -169,12 +151,37 @@ where
             wifi_ssid: WIFI_SSID.to_string(),
             wifi_password: WIFI_PASSWD.to_string(),
             fs_init,
-            display: Some(display),
+            display: None,
             xl9555: xl9555_ref,
         };
-        board.wifi_connect()?;
+
+        let spi_config =
+            esp_idf_svc::hal::spi::SpiConfig::new().baudrate(FromValueType::MHz(30).into());
+        let spi_buf = SpiBusDriver::new(spi_drv, &spi_config)?;
+        let dc_pin =
+            xl9555::io::Output::new(&board.xl9555, xl9555::Pin::P13, xl9555::PinState::Low);
+        let rst_pin =
+            xl9555::io::Output::new(&board.xl9555, xl9555::Pin::P12, xl9555::PinState::Low);
+        let display = display::new(
+            spi_buf,
+            PinDriver::output(peripherals.pins.gpio21)?,
+            dc_pin,
+            rst_pin,
+            ST7789,
+            display_buf,
+        )?;
+        // board.display = Some(display);
         log::info!("board init success");
         Ok(board)
+        // Ok(Self {
+        //     wifi: board.wifi,
+        //     mcu_temperature: board.mcu_temperature,
+        //     fs_init: board.fs_init,
+        //     wifi_password: board.wifi_password.clone(),
+        //     wifi_ssid: board.wifi_ssid.clone(),
+        //     display: Some(display),
+        //     xl9555: board.xl9555,
+        // })
     }
 
     fn init_fs() -> Result<()> {
