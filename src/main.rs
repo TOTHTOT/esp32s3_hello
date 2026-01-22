@@ -1,9 +1,8 @@
 mod board;
-mod display;
 mod http_server;
 
-use crate::board::BoardEsp32State;
-use board::BspEsp32S3CoreBoard;
+use board::peripherals::BoardEsp32State;
+use board::peripherals::BspEsp32S3CoreBoard;
 use esp_idf_svc::hal::peripherals::Peripherals;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -21,7 +20,7 @@ fn main() -> anyhow::Result<()> {
     let board_http = Arc::new(Mutex::new(board_state));
     let board_ble = Arc::clone(&board_http);
     let board_state = Arc::clone(&board_http);
-    let _ble_server_handle = BspEsp32S3CoreBoard::ble_server_start(board_ble)?;
+    let _ble_server_handle = board::ble::ble_server_start(board_ble)?;
     let _http_server_handle = http_server::HttpServer::new(board_http)?;
     let mut loop_times = 0;
     #[cfg(feature = "use_ws2812")]

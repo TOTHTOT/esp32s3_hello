@@ -1,20 +1,12 @@
-// 错误处理
-use anyhow::{anyhow, Result};
-
-// 显示屏相关
 #[cfg(feature = "use_st7789")]
-use crate::display;
-// 嵌入式服务与协议
+use crate::board::display;
+use crate::board::file_system::init_fs;
 use core::cell::RefCell;
-// 标准库
 #[cfg(feature = "use_st7789")]
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
 use embedded_svc::wifi;
-// BLE相关
-use esp32_nimble::{
-    uuid128, BLEAdvertisedDevice, BLEAdvertisementData, BLEDevice, BLEScan, NimbleProperties,
-};
-// ESP-IDF核心服务与硬件抽象
+use esp32_nimble::{BLEAdvertisedDevice, BLEDevice, BLEScan};
+use esp_idf_svc::hal::gpio::{InterruptType, Pull};
 use esp_idf_svc::hal::i2c::{I2cConfig, I2cDriver};
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
@@ -26,11 +18,6 @@ use esp_idf_svc::{
         temp_sensor::{TempSensorConfig, TempSensorDriver},
     },
     nvs::{EspNvsPartition, NvsDefault},
-    sys,
-    sys::{
-        esp, esp_vfs_fat_mount_config_t, esp_vfs_fat_spiflash_mount, nvs_flash_erase,
-        nvs_flash_init, wl_handle_t, ESP_ERR_NVS_NEW_VERSION_FOUND, ESP_ERR_NVS_NO_FREE_PAGES,
-    },
     wifi::{AuthMethod, EspWifi},
 };
 #[cfg(feature = "use_st7789")]
@@ -39,7 +26,6 @@ use mipidsi::interface::SpiInterface;
 use mipidsi::models::ST7789;
 #[cfg(feature = "use_st7789")]
 use mipidsi::NoResetPin;
-// WS2812 LED驱动
 #[cfg(feature = "use_ws2812")]
 use smart_leds::{
     hsv::{hsv2rgb, Hsv},
@@ -47,17 +33,12 @@ use smart_leds::{
 };
 use std::rc::Rc;
 use std::{
-    ffi::CString,
-    fs::{File, OpenOptions},
-    io::{Read as StdRead, Write as StdWrite},
-    sync::{Arc, Mutex},
-    thread::{self, JoinHandle},
+    thread::{self},
     time::Duration,
 };
 #[cfg(feature = "use_ws2812")]
 use ws2812_esp32_rmt_driver::lib_smart_leds::Ws2812Esp32Rmt;
 use xl9555::driver::XL9555;
-
 /// 默认连接的wifi
 const WIFI_SSID: &str = "esp32_2.4G";
 const WIFI_PASSWD: &str = "12345678..";
@@ -97,6 +78,7 @@ pub struct BspEsp32S3CoreBoard<'d> {
     #[cfg(feature = "use_st7789")]
     pub display: Option<MyDisplay<'d>>,
     pub xl9555: Rc<RefCell<XL9555<I2cDriver<'d>>>>,
+    // pub xl9555_interrupt: <PinDriver: PinDriver::InputPin +'d>,
 }
 
 #[derive(Default, Debug)]
@@ -107,12 +89,12 @@ pub struct BoardEsp32State {
 
 #[allow(dead_code)]
 impl<'d> BspEsp32S3CoreBoard<'d> {
-    pub fn new(peripherals: Peripherals, display_buf: &'d mut [u8]) -> Result<Self> {
-        let sysloop = EspSystemEventLoop::take()?;
+    pub fn new(peripherals: Peripherals, display_buf: &'d mut [u8]) -> anyhow::Result<Self> {
+        let sys_loop = EspSystemEventLoop::take()?;
         let nvs = EspNvsPartition::<NvsDefault>::take()?;
 
         let mut fs_init = false;
-        if let Ok(_) = BspEsp32S3CoreBoard::init_fs() {
+        if init_fs().is_ok() {
             fs_init = true;
         }
         // 初始化spi, 这初始化能够让spi外设被多个设备使用
@@ -125,7 +107,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             &driver_config,
         )?;
 
-        let wifi = EspWifi::new(peripherals.modem, sysloop, Some(nvs.clone()))?;
+        let wifi = EspWifi::new(peripherals.modem, sys_loop, Some(nvs.clone()))?;
         log::info!("start init ws2812");
         #[cfg(feature = "use_ws2812")]
         let ws2812 = Ws2812Esp32Rmt::new(peripherals.rmt.channel0, peripherals.pins.gpio48)
@@ -144,6 +126,10 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         let mut xl9555 = XL9555::init(i2c_driver, (false, false, false));
         xl9555.xl9555_ioconfig(0b1111_0000_0000_0000)?;
         let xl9555_ref = Rc::new(RefCell::new(xl9555));
+
+        let mut xl9555_interrupt = PinDriver::input(peripherals.pins.gpio0)?;
+        xl9555_interrupt.set_pull(Pull::Up)?;
+        xl9555_interrupt.set_interrupt_type(InterruptType::NegEdge)?;
 
         let mut board = Self {
             #[cfg(feature = "use_ws2812")]
@@ -192,73 +178,8 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         Ok(board)
     }
 
-    fn init_fs() -> Result<()> {
-        log::info!("init_fs");
-        unsafe {
-            let ret = nvs_flash_init();
-            if ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND {
-                log::info!("fat partition need init");
-                // 如果 nvs 需要擦除
-                nvs_flash_erase();
-                nvs_flash_init();
-            } else {
-                esp!(ret)?;
-            }
-        }
-
-        // 启用磨损均衡功能
-        let mut wl_handle = 0;
-        let mount_config = esp_vfs_fat_mount_config_t {
-            max_files: 5,
-            format_if_mount_failed: true,
-            allocation_unit_size: 4096,
-
-            disk_status_check_enable: false,
-            use_one_fat: false,
-        };
-
-        // 挂载 FAT 到 /fat（分区 label 必须与 partitions.csv 中一致.
-        let mount_point = String::from("/fat");
-        let partition_label = String::from("storage");
-        let res = unsafe {
-            // 和c交互只能使用CString.
-            esp_vfs_fat_spiflash_mount(
-                CString::new(mount_point)?.as_ptr(),
-                CString::new(partition_label)?.as_ptr(),
-                &mount_config,
-                &mut wl_handle as *mut wl_handle_t,
-            )
-        };
-
-        if res != sys::ESP_OK {
-            log::error!("esp_vfs_fat_spiflash_mount failed: {}", res);
-            return Err(anyhow!(res));
-        }
-        log::info!("FAT mounted at /fat");
-        Self::test_fs_rw()?;
-        Ok(())
-    }
-
-    /// `test_fs_rw` 测试文件系统读写
-    fn test_fs_rw() -> Result<()> {
-        let path = "/fat/hello.txt";
-        {
-            let mut f = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .open(path)
-                .expect("create file failed");
-            f.write_all(b"hello from rust on esp32!\n")?;
-        }
-        let mut s = String::new();
-        let mut f = File::open(path)?;
-        f.read_to_string(&mut s)?;
-        log::info!("file content: {}", s);
-        Ok(())
-    }
-
     /// 连接wifi 传入 wifi 名称和密码
-    pub fn wifi_connect(&mut self) -> Result<(), anyhow::Error> {
+    pub fn wifi_connect(&mut self) -> anyhow::Result<(), anyhow::Error> {
         if self.wifi.is_connected()? {
             log::info!("wifi is connected, now disconnecting");
             self.wifi.disconnect()?;
@@ -291,7 +212,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         Ok(())
     }
     #[cfg(feature = "use_ws2812")]
-    pub fn rainbow_rgb(&mut self, hue: u8) -> Result<()> {
+    pub fn rainbow_rgb(&mut self, hue: u8) -> anyhow::Result<()> {
         let pixels = std::iter::once(hsv2rgb(Hsv {
             hue,
             sat: 255,
@@ -301,7 +222,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         Ok(())
     }
     /// 扫描附近蓝牙, 并返回扫描结果类型: BLEAdvertisedDevice
-    pub fn ble_scan(scan_time: i32) -> Result<Vec<BLEAdvertisedDevice>, anyhow::Error> {
+    pub fn ble_scan(scan_time: i32) -> anyhow::Result<Vec<BLEAdvertisedDevice>, anyhow::Error> {
         let ble = BLEDevice::take();
         let mut ble_scan = BLEScan::new();
         let mut devices = Vec::new();
@@ -312,7 +233,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
                 .interval(1000)
                 .window(99)
                 .start(ble, scan_time, |ble_device, _data| {
-                    devices.push(ble_device.clone());
+                    devices.push(*ble_device);
                     None::<BLEAdvertisedDevice>
                 })
                 .await
@@ -320,103 +241,9 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         });
         log::info!("Ble Scan end");
         for device in &devices {
-            log::info!("device: {:?}", device);
+            log::info!("device: {device:?}");
         }
         Ok(devices)
-    }
-
-    pub fn ble_server_start(
-        board: Arc<Mutex<BoardEsp32State>>,
-    ) -> Result<JoinHandle<Result<()>>, anyhow::Error> {
-        let ble = BLEDevice::take();
-        let ble_advertising = ble.get_advertising();
-        let server = ble.get_server();
-        server.on_connect(|server, desc| {
-            log::info!("Client connected: {:?}", desc);
-
-            // 优化通信, 低功耗使用
-            server
-                .update_conn_params(desc.conn_handle(), 24, 48, 0, 60)
-                .unwrap();
-
-            // 没达到最大连接设备数就继续广播
-            if server.connected_count() < (esp_idf_svc::sys::CONFIG_BT_NIMBLE_MAX_CONNECTIONS as _)
-            {
-                log::info!("Multi-connect support: start advertising");
-                ble_advertising.lock().start().unwrap();
-            }
-        });
-
-        server.on_disconnect(|_desc, reason| {
-            log::info!("Disconnected from server: {:?}", reason);
-        });
-        let service = server.create_service(uuid128!("fafafafa-fafa-fafa-fafa-fafafafafafa"));
-        let static_characteristic = service.lock().create_characteristic(
-            uuid128!("d4e0e0d0-1a2b-11e9-ab14-d663bd873d93"),
-            NimbleProperties::READ,
-        );
-        static_characteristic
-            .lock()
-            .set_value(b"Hello World, this is static, TOTHTOT");
-
-        // 通知特征, 能够向订阅这个uuid的设备不停发送消息
-        let notifying_characteristic = service.lock().create_characteristic(
-            uuid128!("a3c87500-8ed3-4bdf-8a39-a01bebede295"),
-            NimbleProperties::READ | NimbleProperties::NOTIFY,
-        );
-        notifying_characteristic
-            .lock()
-            .set_value(b"Hello World, this is notify, TOTHTOT");
-
-        // 写入特征, 通过这个uuid能够向esp发送数据
-        let write_characteristic = service.lock().create_characteristic(
-            uuid128!("3c9a3f00-8ed3-4bdf-8a39-a01bebede295"),
-            NimbleProperties::READ | NimbleProperties::WRITE,
-        );
-        write_characteristic
-            .lock()
-            .on_read(move |characteristic, desc| {
-                log::info!("characteristic: {:?}, {:?}", characteristic, desc);
-            })
-            .on_write(|args| {
-                log::info!(
-                    "wrote to write_characteristic: {:?} {:?}",
-                    args.current_data(),
-                    args.recv_data()
-                );
-            });
-
-        // 设置蓝牙名称, 以及透传uuid, 开始蓝牙服务
-        ble_advertising.lock().set_data(
-            BLEAdvertisementData::new()
-                .name("ESP32-GATT-Server")
-                .add_service_uuid(uuid128!("fafafafa-fafa-fafa-fafa-fafafafafafa")),
-        )?;
-        ble_advertising.lock().start()?;
-
-        // 开启连接日志显示
-        server.ble_gatts_show_local();
-
-        let handle = thread::spawn(move || -> Result<()> {
-            let mut counter = 0;
-            loop {
-                thread::sleep(Duration::from_millis(1000));
-                let board_state = board.lock().expect("Failed to lock board mutex");
-                let temp = board_state.current_mcu_temperature;
-                if board_state.exit == true {
-                    log::info!("ble server stopped");
-                    break Ok(());
-                }
-                let notify_str = String::from(format!("running:{counter},temp:{temp}",));
-                // log::info!("{notify_str}");
-                notifying_characteristic
-                    .lock()
-                    .set_value(notify_str.as_bytes())
-                    .notify();
-                counter += 1;
-            }
-        });
-        Ok(handle)
     }
 
     pub fn wifi_ssid(&self) -> &str {
@@ -427,7 +254,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
         &self.wifi_password
     }
 
-    pub fn get_mcu_temperature(&mut self) -> Result<f32> {
+    pub fn get_mcu_temperature(&mut self) -> anyhow::Result<f32> {
         let temp = self.mcu_temperature.get_celsius()?;
         Ok(temp)
     }
@@ -442,7 +269,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
 
     /// 屏幕复位
     #[cfg(feature = "use_st7789")]
-    pub fn display_rst(&self) -> Result<()> {
+    pub fn display_rst(&self) -> anyhow::Result<()> {
         if self.display.is_none() {
             return Err(anyhow::Error::msg("display is none"));
         }
@@ -457,7 +284,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
     }
     /// 设置屏幕背光, 目前的显示屏的背光引脚有xl9555控制基本不支持pwm, 所以暂时用true和false控制
     #[cfg(feature = "use_st7789")]
-    pub fn display_set_backlight(&self, backlight: u8) -> Result<()> {
+    pub fn display_set_backlight(&self, backlight: u8) -> anyhow::Result<()> {
         if self.display.is_none() {
             return Err(anyhow::Error::msg("display is none"));
         }

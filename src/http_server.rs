@@ -1,4 +1,4 @@
-use crate::board::BoardEsp32State;
+use crate::BoardEsp32State;
 use embedded_svc::http::Method;
 use esp_idf_svc::http::server::EspHttpServer;
 use esp_idf_svc::io::Write;
@@ -39,7 +39,7 @@ impl<'d> HttpServer<'d> {
             let mut response = match request.into_ok_response() {
                 Ok(response) => response,
                 Err(err) => {
-                    log::warn!("Failed to read response: {:?}", err);
+                    log::warn!("Failed to read response: {err:?}");
                     return Err(());
                 }
             };
@@ -92,6 +92,6 @@ impl<'d> HttpServer<'d> {
     }
 
     fn temperature(val: f32) -> String {
-        Self::templated(format!("mcu temperature: {}", val))
+        Self::templated(format!("mcu temperature: {val}"))
     }
 }
