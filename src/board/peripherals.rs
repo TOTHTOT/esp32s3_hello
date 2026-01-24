@@ -1,13 +1,19 @@
 #[cfg(feature = "use_st7789")]
 use crate::board::display;
+use crate::board::es8388;
+use crate::board::es8388::driver::{Es8388, RunMode};
 use crate::board::file_system::init_fs;
+use crate::board::share_i2c_bus::SharedI2cDevice;
+use anyhow::Context;
 use core::cell::RefCell;
 #[cfg(feature = "use_st7789")]
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
 use embedded_svc::wifi;
 use esp32_nimble::{BLEAdvertisedDevice, BLEDevice, BLEScan};
-use esp_idf_svc::hal::gpio::{InterruptType, Pull};
+use esp_idf_svc::hal::gpio::IOPin;
+use esp_idf_svc::hal::gpio::{AnyIOPin, InterruptType, Pull};
 use esp_idf_svc::hal::i2c::{I2cConfig, I2cDriver};
+use esp_idf_svc::hal::i2s::I2sDriver;
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::{
@@ -32,6 +38,7 @@ use smart_leds::{
     SmartLedsWrite,
 };
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::{
     thread::{self},
     time::Duration,
@@ -39,23 +46,29 @@ use std::{
 #[cfg(feature = "use_ws2812")]
 use ws2812_esp32_rmt_driver::lib_smart_leds::Ws2812Esp32Rmt;
 use xl9555::driver::XL9555;
+
 /// 默认连接的wifi
 const WIFI_SSID: &str = "esp32_2.4G";
 const WIFI_PASSWD: &str = "12345678..";
 
 /// 屏幕引脚定义
 #[cfg(feature = "use_st7789")]
-type CsPin<'d> = PinDriver<'d, Gpio21, Output>;
+type CsPin = PinDriver<'static, Gpio21, Output>;
 #[cfg(feature = "use_st7789")]
-type DcPin<'d> = PinDriver<'d, Gpio13, Output>;
+type DcPin = PinDriver<'static, Gpio13, Output>;
 #[allow(dead_code)]
-type Xl9555Pin<'d> = xl9555::io::Output<'d, I2cDriver<'d>>;
+type Xl9555PinType = Rc<RefCell<XL9555<SharedI2cDevice<Arc<Mutex<I2cDriver<'static>>>>>>>;
+type Es8388Type = Es8388<
+    'static,
+    SharedI2cDevice<Arc<Mutex<I2cDriver<'static>>>>,
+    PinDriver<'static, AnyIOPin, Output>,
+>;
 #[cfg(feature = "use_st7789")]
-type MyDisplay<'d> = mipidsi::Display<
+type MyDisplay = mipidsi::Display<
     SpiInterface<
-        'd,
-        ExclusiveDevice<SpiBusDriver<'d, SpiDriver<'d>>, CsPin<'d>, NoDelay>,
-        DcPin<'d>,
+        'static,
+        ExclusiveDevice<SpiBusDriver<'static, SpiDriver<'static>>, CsPin, NoDelay>,
+        DcPin,
     >,
     DisplayModel,
     NoResetPin,
@@ -63,11 +76,11 @@ type MyDisplay<'d> = mipidsi::Display<
 
 #[cfg(feature = "use_st7789")]
 type DisplayModel = ST7789;
-pub struct BspEsp32S3CoreBoard<'d> {
+pub struct BspEsp32S3CoreBoard {
     #[cfg(feature = "use_ws2812")]
-    pub ws2812: Ws2812Esp32Rmt<'d>,
-    pub wifi: EspWifi<'d>,
-    mcu_temperature: TempSensorDriver<'d>,
+    pub ws2812: Ws2812Esp32Rmt<'static>,
+    pub wifi: EspWifi<'static>,
+    mcu_temperature: TempSensorDriver<'static>,
     fs_init: bool, // 标记文件系统是否初始化成功
     wifi_ssid: String,
     wifi_password: String,
@@ -76,9 +89,10 @@ pub struct BspEsp32S3CoreBoard<'d> {
     #[cfg(feature = "use_st7789")]
     display_backlight_pin: xl9555::Pin,
     #[cfg(feature = "use_st7789")]
-    pub display: Option<MyDisplay<'d>>,
-    pub xl9555: Rc<RefCell<XL9555<I2cDriver<'d>>>>,
-    // pub xl9555_interrupt: <PinDriver: PinDriver::InputPin +'d>,
+    pub display: Option<MyDisplay>,
+    pub xl9555: Xl9555PinType,
+    pub es8388: Option<Es8388Type>,
+    // pub xl9555_interrupt: <PinDriver: PinDriver::InputPin +'static>,
 }
 
 #[derive(Default, Debug)]
@@ -88,8 +102,8 @@ pub struct BoardEsp32State {
 }
 
 #[allow(dead_code)]
-impl<'d> BspEsp32S3CoreBoard<'d> {
-    pub fn new(peripherals: Peripherals, display_buf: &'d mut [u8]) -> anyhow::Result<Self> {
+impl BspEsp32S3CoreBoard {
+    pub fn new(peripherals: Peripherals, display_buf: &'static mut [u8]) -> anyhow::Result<Self> {
         let sys_loop = EspSystemEventLoop::take()?;
         let nvs = EspNvsPartition::<NvsDefault>::take()?;
 
@@ -123,13 +137,36 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             peripherals.pins.gpio42,
             &I2cConfig::new().baudrate(FromValueType::kHz(100).into()),
         )?;
-        let mut xl9555 = XL9555::init(i2c_driver, (false, false, false));
+        let i2c_bus = Arc::new(Mutex::new(i2c_driver));
+        let mut xl9555 = XL9555::init(SharedI2cDevice(i2c_bus.clone()), (false, false, false));
         xl9555.xl9555_ioconfig(0b1111_0000_0000_0000)?;
         let xl9555_ref = Rc::new(RefCell::new(xl9555));
 
         let mut xl9555_interrupt = PinDriver::input(peripherals.pins.gpio0)?;
         xl9555_interrupt.set_pull(Pull::Up)?;
         xl9555_interrupt.set_interrupt_type(InterruptType::NegEdge)?;
+
+        let es8388_i2c = SharedI2cDevice(i2c_bus.clone());
+        let i2s = peripherals.i2s0;
+        // i2s相关初始化
+        let i2s_driver = I2sDriver::new_std_bidir(
+            i2s,
+            &es8388::driver::default_i2s_config(),
+            peripherals.pins.gpio47,      // bclk i2s总线的时钟
+            peripherals.pins.gpio45,      // din codec支持录音功能可以把麦克风数据回传给单片机
+            peripherals.pins.gpio1,       // dout 音频输出
+            Some(peripherals.pins.gpio2), // mclk 给codec芯片提供的始终
+            peripherals.pins.gpio48,      // ws 左右声道选择
+        )
+        .context("Failed to initialize I2S bidirectional driver")?;
+        let en_spk = PinDriver::output(peripherals.pins.gpio20.downgrade())?;
+        let es8388 = Es8388::new(
+            i2s_driver,
+            es8388_i2c,
+            en_spk,
+            es8388::driver::CHIP_ADDR,
+            RunMode::AdcDac,
+        );
 
         let mut board = Self {
             #[cfg(feature = "use_ws2812")]
@@ -146,6 +183,7 @@ impl<'d> BspEsp32S3CoreBoard<'d> {
             display_backlight_pin: xl9555::Pin::P13,
             #[cfg(feature = "use_st7789")]
             display_rst_pin: xl9555::Pin::P12,
+            es8388: Some(es8388),
         };
 
         let spi_config =

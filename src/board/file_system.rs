@@ -55,6 +55,7 @@ pub fn test_fs_rw() -> anyhow::Result<()> {
     {
         let mut f = OpenOptions::new()
             .create(true)
+            .truncate(true)
             .write(true)
             .open(path)
             .expect("create file failed");
