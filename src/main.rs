@@ -1,6 +1,7 @@
 mod board;
 mod http_server;
 
+use crate::board::es8388;
 use board::peripherals::BoardEsp32State;
 use board::peripherals::BspEsp32S3CoreBoard;
 use embedded_hal::digital::PinState;
@@ -20,10 +21,10 @@ fn main() -> anyhow::Result<()> {
     let board_state = BoardEsp32State::default();
     // 有需要的话可以在线程结束后回收
     let board_http = Arc::new(Mutex::new(board_state));
-    let board_ble = Arc::clone(&board_http);
+    // let board_ble = Arc::clone(&board_http);
     let board_state = Arc::clone(&board_http);
-    let _ble_server_handle = board::ble::ble_server_start(board_ble)?;
-    let _http_server_handle = http_server::HttpServer::new(board_http)?;
+    // let _ble_server_handle = board::ble::ble_server_start(board_ble)?;
+    // let _http_server_handle = http_server::HttpServer::new(board_http)?;
 
     let _ =
         xl9555::io::Output::new(&board.xl9555.clone(), xl9555::Pin::P02, PinState::Low).set_low();
@@ -31,6 +32,8 @@ fn main() -> anyhow::Result<()> {
     board.manager.play(Box::new(wave));
     thread::sleep(Duration::from_millis(5000));
     board.manager.clear();
+
+    es8388::play_wav(&mut board.manager);
     let mut loop_times = 0;
     #[cfg(feature = "use_ws2812")]
     let mut hue: u8 = 0;
