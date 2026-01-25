@@ -126,12 +126,10 @@ where
         let mut val = 0u8;
         if !dac_en {
             val |= (1 << 0) | (1 << 2);
-        } // DACL, DACR Power Down
+        }
         if !adc_en {
             val |= (1 << 1) | (1 << 3);
-        } // ADCL, ADCR Power Down
-
-        // 建议保持高 4 位为 1 (0xF0) 以维持内部偏置电源，仅修改低 4 位
+        }
         self.write_reg(Command::ChipPowerManagement, val)
     }
 
@@ -166,7 +164,6 @@ where
     /// 对应 es8388_spkvol_set: 设置喇叭音量 (Reg 0x30/0x31)
     pub fn set_spk_volume(&mut self, volume: u8) -> anyhow::Result<()> {
         let vol = volume.min(33);
-        // 假设 Command 中对应的地址是正确的 R30/R31
         self.write_reg(Command::DacControl26, vol)?;
         self.write_reg(Command::DacControl27, vol)
     }

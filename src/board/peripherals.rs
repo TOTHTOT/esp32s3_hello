@@ -1,8 +1,9 @@
 #[cfg(feature = "use_st7789")]
 use crate::board::display;
 use crate::board::es8388;
+use crate::board::es8388::command::Command;
 use crate::board::es8388::driver::{Es8388, RunMode};
-use crate::board::es8388::play_sine_test;
+use crate::board::es8388::{play_sine_test, play_test_signal};
 use crate::board::file_system::init_fs;
 use crate::board::share_i2c_bus::SharedI2cDevice;
 use anyhow::Context;
@@ -189,14 +190,16 @@ impl BspEsp32S3CoreBoard {
             es8388.set_spk_volume(20)?;
             es8388.set_speaker(true)?;
 
-            // 调试：打印寄存器值，确认配置生效
+            es8388.write_reg(Command::DacControl26, 33)?; // Reg 48 (0x30)
+            es8388.write_reg(Command::DacControl27, 33)?; // Reg 49 (0x31)
+
             let regs = es8388.read_all()?;
-            info!("ES8388 Registers: {:02X?}", regs);
-            play_sine_test(
-                &mut es8388,
-                440.0, // 频率440Hz（标准A音）
-                5000,  // 采样率44100Hz
-            )?;
+            info!("ES8388 Registers: ");
+            for (idx, val) in regs.iter().enumerate() {
+                info!("reg[{}] = {:?}", idx, val);
+            }
+
+            play_test_signal(&mut es8388)?;
         }
 
         let mut board = Self {

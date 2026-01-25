@@ -117,3 +117,24 @@ pub fn play_sine_test(
 
     Ok(())
 }
+pub fn play_test_signal(es8388: &mut Es8388<impl I2c, impl OutputPin>) -> anyhow::Result<()> {
+    es8388.i2s.tx_enable()?;
+    let mut buffer = Vec::with_capacity(4096);
+    let amplitude: i16 = 20000; // 稍微降低一点防止削波噪声
+
+    for i in 0..2048 {
+        let val = if (i / 1024) % 2 == 0 {
+            amplitude
+        } else {
+            -amplitude
+        };
+        let bytes = val.to_le_bytes();
+        buffer.extend_from_slice(&bytes);
+        buffer.extend_from_slice(&bytes);
+    }
+
+    for _ in 0..1000 {
+        es8388.i2s.write(&buffer, 1000)?;
+    }
+    Ok(())
+}
