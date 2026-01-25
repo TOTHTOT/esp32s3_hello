@@ -1,22 +1,19 @@
 use crate::board::es8388::command::Command;
-use embedded_hal::digital::OutputPin;
 use esp_idf_svc::hal::i2s::config::{
     ClockSource, DataBitWidth, MclkMultiple, SlotMode, StdClkConfig, StdConfig, StdSlotConfig,
 };
-use esp_idf_svc::hal::i2s::{config, I2sBiDir, I2sDriver};
 use std::cmp::PartialEq;
 
 pub const CHIP_ADDR: u8 = 0x10; // 芯片地址, ce是低电平时
 #[allow(dead_code)]
-pub struct Es8388<'d, I2C, EnSpk> {
+pub struct Es8388<I2C> {
     i2c: I2C,
-    pub i2s: I2sDriver<'d, I2sBiDir>,
-    en_spk: EnSpk,
     addr: u8,
     mode: RunMode,
 }
 
 #[derive(PartialEq, Debug)]
+#[allow(dead_code)]
 pub enum RunMode {
     Adc,
     Dac,
@@ -24,25 +21,12 @@ pub enum RunMode {
 }
 
 #[allow(dead_code)]
-impl<'d, I2C, EnSpk> Es8388<'d, I2C, EnSpk>
+impl<I2C> Es8388<I2C>
 where
     I2C: embedded_hal::i2c::I2c,
-    EnSpk: OutputPin,
 {
-    pub fn new(
-        i2s: I2sDriver<'d, I2sBiDir>,
-        i2c: I2C,
-        en_spk: EnSpk,
-        addr: u8,
-        mode: RunMode,
-    ) -> Self {
-        Es8388 {
-            i2c,
-            i2s,
-            en_spk,
-            addr,
-            mode,
-        }
+    pub fn new(i2c: I2C, addr: u8, mode: RunMode) -> Self {
+        Es8388 { i2c, addr, mode }
     }
 
     /// 初始化芯片, 修复寄存器配置逻辑
@@ -75,13 +59,23 @@ where
         // 5. DAC 配置 (播放)
         self.write_reg(Command::DacControl1, 0x18)?; // 16bit 格式
         self.write_reg(Command::DacControl2, 0x02)?; // MCLK/LRCK = 256
-        self.write_reg(Command::DacControl4, 0x00)?; // 左数字音量最小
-        self.write_reg(Command::DacControl5, 0x00)?; // 右数字音量最小
+        self.write_reg(Command::DacControl4, 0xc0)?; // 左数字音量
+        self.write_reg(Command::DacControl5, 0xc0)?; // 右数字音量
         self.write_reg(Command::DacControl17, 0xB8)?; // L混频器配置
         self.write_reg(Command::DacControl20, 0xB8)?; // R混频器配置
         std::thread::sleep(std::time::Duration::from_millis(100));
         Ok(())
     }
+
+    pub fn start(&mut self) -> anyhow::Result<()> {
+        self.set_adda_cfg(true, false)?;
+        self.write_reg(Command::DacControl4, 0x00)?; // 左数字音量
+        self.write_reg(Command::DacControl5, 0x00)?; // 右数字音量
+        self.set_input_cfg(0)?;
+        self.set_output_cfg(true, true)?;
+        self.set_spk_volume(25)
+    }
+
     /// 写入寄存器
     pub fn write_reg(&mut self, reg: Command, val: u8) -> anyhow::Result<()> {
         self.i2c
@@ -110,16 +104,6 @@ where
             buf.push(tmp);
         }
         Ok(buf)
-    }
-
-    pub fn write_audio(&mut self, data: &[u8], timeout_ms: u32) -> anyhow::Result<usize> {
-        // self.set_speaker(true)?;
-        let size = self
-            .i2s
-            .write(data, timeout_ms)
-            .map_err(|e| anyhow::anyhow!("I2S Write Error: {e:?}"))?;
-        // self.set_speaker(false)?;
-        Ok(size)
     }
 
     pub fn set_adda_cfg(&mut self, dac_en: bool, adc_en: bool) -> anyhow::Result<()> {
@@ -154,14 +138,14 @@ where
         self.write_reg(Command::DacControl23, val) // R23
     }
 
-    /// 对应 es8388_hpvol_set: 设置耳机音量 (Reg 0x2E/0x2F)
+    /// 设置耳机音量 (Reg 0x2E/0x2F)
     pub fn set_hp_volume(&mut self, volume: u8) -> anyhow::Result<()> {
         let vol = volume.min(33);
         self.write_reg(Command::DacControl24, vol)?;
         self.write_reg(Command::DacControl25, vol)
     }
 
-    /// 对应 es8388_spkvol_set: 设置喇叭音量 (Reg 0x30/0x31)
+    /// 设置喇叭音量 (Reg 0x30/0x31)
     pub fn set_spk_volume(&mut self, volume: u8) -> anyhow::Result<()> {
         let vol = volume.min(33);
         self.write_reg(Command::DacControl26, vol)?;
@@ -193,46 +177,14 @@ where
         val |= min_gain & 0x07;
         self.write_reg(Command::AdcControl10, val) // R18/0x12
     }
-
-    pub fn set_speaker(&mut self, on: bool) -> anyhow::Result<()> {
-        if on {
-            self.en_spk
-                .set_low()
-                .map_err(|_| anyhow::anyhow!("GPIO Error"))?;
-        } else {
-            self.en_spk
-                .set_high()
-                .map_err(|_| anyhow::anyhow!("GPIO Error"))?;
-        }
-        Ok(())
-    }
-    /// 统一启动函数：按照正点原子逻辑开启播放
-    pub fn start_playing(&mut self) -> anyhow::Result<()> {
-        // 1. 开启 I2S
-        self.i2s.tx_enable()?;
-
-        // 2. 开启 DAC 电源 (对应 adda_cfg(1, 0))
-        self.set_adda_cfg(true, false)?;
-
-        // 3. 开启输出通道 (对应 output_cfg(1, 1))
-        self.set_output_cfg(true, true)?;
-
-        // 4. 设置音量
-        self.set_hp_volume(30)?;
-        self.set_spk_volume(30)?;
-
-        // 5. 开启硬件功放 (MD8002A)
-        self.set_speaker(true)?;
-
-        Ok(())
-    }
 }
 
-// 修复I2S配置：确保时序匹配
+/// 修复I2S配置：确保时序匹配
+#[allow(dead_code)]
 pub fn default_i2s_config() -> StdConfig {
-    let channel_cfg = config::Config::default();
+    let channel_cfg = esp_idf_svc::hal::i2s::config::Config::default();
     let i2s_std_clk_config = StdClkConfig::new(44100, ClockSource::Pll160M, MclkMultiple::M256);
-    let i2s_slot_cfg = StdSlotConfig::philips_slot_default(DataBitWidth::Bits16, SlotMode::Stereo);
+    let i2s_slot_cfg = StdSlotConfig::philips_slot_default(DataBitWidth::Bits16, SlotMode::Mono);
     StdConfig::new(
         channel_cfg,
         i2s_std_clk_config,

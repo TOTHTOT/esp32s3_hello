@@ -1,20 +1,17 @@
 #[cfg(feature = "use_st7789")]
 use crate::board::display;
 use crate::board::es8388;
-use crate::board::es8388::command::Command;
 use crate::board::es8388::driver::{Es8388, RunMode};
-use crate::board::es8388::{play_sine_test, play_test_signal};
 use crate::board::file_system::init_fs;
 use crate::board::share_i2c_bus::SharedI2cDevice;
 use anyhow::Context;
+use awedio::manager::Manager;
 use core::cell::RefCell;
-use embedded_hal::digital::PinState;
 #[cfg(feature = "use_st7789")]
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
 use embedded_svc::wifi;
 use esp32_nimble::{BLEAdvertisedDevice, BLEDevice, BLEScan};
-use esp_idf_svc::hal::gpio::IOPin;
-use esp_idf_svc::hal::gpio::{AnyIOPin, InterruptType, Pull};
+use esp_idf_svc::hal::gpio::{InterruptType, Pull};
 use esp_idf_svc::hal::i2c::{I2cConfig, I2cDriver};
 use esp_idf_svc::hal::i2s::I2sDriver;
 use esp_idf_svc::{
@@ -29,7 +26,6 @@ use esp_idf_svc::{
     nvs::{EspNvsPartition, NvsDefault},
     wifi::{AuthMethod, EspWifi},
 };
-use log::{error, info};
 #[cfg(feature = "use_st7789")]
 use mipidsi::interface::SpiInterface;
 #[cfg(feature = "use_st7789")]
@@ -62,14 +58,7 @@ type CsPin = PinDriver<'static, Gpio21, Output>;
 type DcPin = PinDriver<'static, Gpio13, Output>;
 #[allow(dead_code)]
 type Xl9555PinType = Rc<RefCell<XL9555<SharedI2cDevice<Arc<Mutex<I2cDriver<'static>>>>>>>;
-type Es8388Type = Es8388<
-    'static,
-    SharedI2cDevice<Arc<Mutex<I2cDriver<'static>>>>,
-    xl9555::io::Output<
-        'static,
-        SharedI2cDevice<std::sync::Arc<std::sync::Mutex<I2cDriver<'static>>>>,
-    >,
->;
+type Es8388Type = Es8388<SharedI2cDevice<Arc<Mutex<I2cDriver<'static>>>>>;
 #[cfg(feature = "use_st7789")]
 type MyDisplay = mipidsi::Display<
     SpiInterface<
@@ -83,6 +72,7 @@ type MyDisplay = mipidsi::Display<
 
 #[cfg(feature = "use_st7789")]
 type DisplayModel = ST7789;
+#[allow(dead_code)]
 pub struct BspEsp32S3CoreBoard {
     #[cfg(feature = "use_ws2812")]
     pub ws2812: Ws2812Esp32Rmt<'static>,
@@ -98,7 +88,8 @@ pub struct BspEsp32S3CoreBoard {
     #[cfg(feature = "use_st7789")]
     pub display: Option<MyDisplay>,
     pub xl9555: Xl9555PinType,
-    pub es8388: Option<Es8388Type>,
+    pub es8388: Es8388Type,
+    pub manager: Manager,
     // pub xl9555_interrupt: <PinDriver: PinDriver::InputPin +'static>,
 }
 
@@ -153,54 +144,31 @@ impl BspEsp32S3CoreBoard {
         xl9555_interrupt.set_pull(Pull::Up)?;
         xl9555_interrupt.set_interrupt_type(InterruptType::NegEdge)?;
 
-        // 原调用逻辑修改：
-        {
-            let es8388_i2c = SharedI2cDevice(i2c_bus.clone());
-            let i2s = peripherals.i2s0;
-            // 初始化I2S（确认引脚对应ES8388）
-            let i2s_driver = I2sDriver::new_std_bidir(
-                i2s,
-                &es8388::driver::default_i2s_config(),
-                peripherals.pins.gpio46,      // BCLK（ES8388的BCLK引脚）
-                peripherals.pins.gpio14,      // DIN（ES8388的ADCDAT引脚）
-                peripherals.pins.gpio10,      // DOUT（ES8388的DACDAT引脚）
-                Some(peripherals.pins.gpio3), // MCLK（必须！ES8388的MCLK引脚）
-                peripherals.pins.gpio9,       // WS（ES8388的LRCK引脚）
-            )
-            .context("Failed to initialize I2S bidirectional driver")?;
+        let es8388_i2c = SharedI2cDevice(i2c_bus.clone());
+        let i2s = peripherals.i2s0;
+        let mut es8388 = Es8388::new(es8388_i2c, es8388::driver::CHIP_ADDR, RunMode::AdcDac);
+        // 初始化+启动
+        es8388.init()?;
+        es8388.start()?;
+        let regs = es8388.read_all()?;
+        log::info!("ES8388 Registers: ");
+        regs.iter()
+            .enumerate()
+            .map(|(i, reg)| log::info!("reg[{}] = {:?}", i, reg))
+            .last();
 
-            // 扬声器使能引脚（确认硬件接线）
-            let xl9555_clone = xl9555_ref.clone();
-            let en_spk = xl9555::io::Output::new(&xl9555_clone, xl9555::Pin::P02, PinState::Low);
-
-            // 创建ES8388实例（录播一体模式）
-            let mut es8388 = Es8388::new(
-                i2s_driver,
-                es8388_i2c,
-                en_spk,
-                es8388::driver::CHIP_ADDR,
-                RunMode::AdcDac,
-            );
-
-            // 初始化+启动
-            es8388.init()?;
-            es8388.set_adda_cfg(true, false)?;
-            es8388.set_input_cfg(0)?;
-            es8388.set_output_cfg(true, true)?;
-            es8388.set_spk_volume(20)?;
-            es8388.set_speaker(true)?;
-
-            es8388.write_reg(Command::DacControl26, 33)?; // Reg 48 (0x30)
-            es8388.write_reg(Command::DacControl27, 33)?; // Reg 49 (0x31)
-
-            let regs = es8388.read_all()?;
-            info!("ES8388 Registers: ");
-            for (idx, val) in regs.iter().enumerate() {
-                info!("reg[{}] = {:?}", idx, val);
-            }
-
-            play_test_signal(&mut es8388)?;
-        }
+        let i2s_driver = I2sDriver::new_std_tx(
+            i2s,
+            &es8388::driver::default_i2s_config(),
+            peripherals.pins.gpio46, // BCLK（ES8388的BCLK引脚）
+            // peripherals.pins.gpio14,      // DIN（ES8388的ADCDAT引脚）
+            peripherals.pins.gpio10,      // DOUT（ES8388的DACDAT引脚）
+            Some(peripherals.pins.gpio3), // MCLK（必须！ES8388的MCLK引脚）
+            peripherals.pins.gpio9,       // WS（ES8388的LRCK引脚）
+        )
+        .context("Failed to initialize I2S bidirectional driver")?;
+        let backend = awedio_esp32::Esp32Backend::with_defaults(i2s_driver, 1, 44100, 128);
+        let manager = backend.start();
 
         let mut board = Self {
             #[cfg(feature = "use_ws2812")]
@@ -217,7 +185,8 @@ impl BspEsp32S3CoreBoard {
             display_backlight_pin: xl9555::Pin::P13,
             #[cfg(feature = "use_st7789")]
             display_rst_pin: xl9555::Pin::P12,
-            es8388: None,
+            es8388,
+            manager,
         };
 
         let spi_config =
