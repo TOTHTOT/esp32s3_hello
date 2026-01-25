@@ -4,7 +4,7 @@ incremental = false
 
 [target.xtensa-esp32s3-espidf]
 linker = "ldproxy"
-runner = "espflash flash --monitor --partition-table partitions.csv"
+runner = "espflash flash --baud 1000000 --monitor --partition-table partitions.csv"
 rustflags = [ "--cfg",  "espidf_time64"]
 
 [unstable]

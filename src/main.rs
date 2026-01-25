@@ -24,21 +24,21 @@ fn main() -> anyhow::Result<()> {
     let board_state = Arc::clone(&board_http);
     let _ble_server_handle = board::ble::ble_server_start(board_ble)?;
     let _http_server_handle = http_server::HttpServer::new(board_http)?;
-    let mut es8388 = board.es8388.take().expect("take failed");
-    let _ = thread::spawn(move || {
-        es8388.init().unwrap();
-        es8388.start().unwrap();
-        es8388.set_voice_volume(100).unwrap();
-        es8388.set_dac_volume(100).unwrap();
-        let audio = Box::new(es8388::generate_sine_wave(440.0, 44100.0, 1000));
-
-        loop {
-            if let Err(e) = es8388.write_audio(&audio, 1000) {
-                log::error!("Failed to write audio buffer: {e:?}");
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2000));
-        }
-    });
+    // let mut es8388 = board.es8388.take().expect("take failed");
+    // let _ = thread::spawn(move || {
+    //     es8388.init().unwrap();
+    //     es8388.start().unwrap();
+    //     es8388.set_voice_volume(100).unwrap();
+    //     es8388.set_dac_volume(100).unwrap();
+    //     let audio = Box::new(es8388::generate_sine_wave(440.0, 44100.0, 1000));
+    //
+    //     loop {
+    //         if let Err(e) = es8388.write_audio(&audio, 1000) {
+    //             log::error!("Failed to write audio buffer: {e:?}");
+    //         }
+    //         std::thread::sleep(std::time::Duration::from_millis(2000));
+    //     }
+    // });
     let mut loop_times = 0;
     #[cfg(feature = "use_ws2812")]
     let mut hue: u8 = 0;
